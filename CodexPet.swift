@@ -333,6 +333,7 @@ private final class PetView: NSView {
     var locked = false
 
     private var downPoint = NSPoint.zero
+    private var clickWork: DispatchWorkItem?
     private var startOrigin = NSPoint.zero
     private var lastDragX: CGFloat = 0
     private var dragged = false
@@ -391,6 +392,8 @@ private final class PetView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        clickWork?.cancel()
+        clickWork = nil
         dragged = false
         guard !locked else { return }
         downPoint = NSEvent.mouseLocation
@@ -420,9 +423,21 @@ private final class PetView: NSView {
             onDragStop?()
             onDragEnd?()
         } else if event.clickCount >= 2 {
+            clickWork?.cancel()
+            clickWork = nil
             onDoubleClick?()
         } else {
-            onClick?()
+            // hold the single click until the double-click window closes so a
+            // cheer does not first focus the terminal
+            let work = DispatchWorkItem { [weak self] in
+                self?.clickWork = nil
+                self?.onClick?()
+            }
+            clickWork = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + NSEvent.doubleClickInterval,
+                execute: work
+            )
         }
         dragged = false
     }
