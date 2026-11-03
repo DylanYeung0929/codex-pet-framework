@@ -740,7 +740,6 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var balanceLow = false
     private var contextHighSessions = Set<String>()
     private var turnStartBySession: [String: Double] = [:]
-    private var lastTurnBySession: [String: Double] = [:]
     private var turnDurationBySession: [String: Double] = [:]
     private var alertText: String?
     private var alertUntil: Double = 0
@@ -3024,6 +3023,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func trackTurnEvents(_ loaded: [Session]) {
+        let activeStates: Set<String> = ["thinking", "bash", "search", "tool", "waiting", "start"]
         for session in loaded {
             guard session.ts > 0 else { continue }
             switch session.event {
@@ -3032,11 +3032,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             case "Stop":
                 if let start = turnStartBySession[session.id], session.ts >= start {
                     turnDurationBySession[session.id] = session.ts - start
-                    lastTurnBySession[session.id] = session.ts
                     turnStartBySession.removeValue(forKey: session.id)
                 }
             default:
-                break
+                // a fast PreToolUse can overwrite UserPromptSubmit before the next
+                // poll, so fall back to the first active status we observe
+                if turnStartBySession[session.id] == nil, activeStates.contains(session.state) {
+                    turnStartBySession[session.id] = session.ts
+                }
             }
         }
     }
