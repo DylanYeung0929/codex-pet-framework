@@ -513,8 +513,8 @@ private final class BubbleView: NSView {
         container.addSubview(label)
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
-            glass.style = .regular
-            glass.tintColor = NSColor(srgbRed: 0.02, green: 0.03, blue: 0.06, alpha: 0.16)
+            glass.style = .clear
+            glass.tintColor = NSColor(srgbRed: 0.01, green: 0.02, blue: 0.04, alpha: 0.42)
             glass.contentView = container
             addSubview(glass)
             glassView = glass
@@ -528,7 +528,7 @@ private final class BubbleView: NSView {
         glassView?.frame = bounds
         if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
             glass.cornerRadius = cornerRadius
-            container.layer?.backgroundColor = NSColor(srgbRed: 0.02, green: 0.03, blue: 0.06, alpha: 0.30).cgColor
+            container.layer?.backgroundColor = NSColor(srgbRed: 0.01, green: 0.02, blue: 0.04, alpha: 0.58).cgColor
             container.layer?.cornerRadius = cornerRadius
             container.layer?.cornerCurve = .continuous
             container.layer?.masksToBounds = true
@@ -667,8 +667,8 @@ private final class BadgeView: NSView {
         container.addSubview(label)
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
-            glass.style = .regular
-            glass.tintColor = NSColor(srgbRed: 0.02, green: 0.03, blue: 0.06, alpha: 0.16)
+            glass.style = .clear
+            glass.tintColor = NSColor(srgbRed: 0.01, green: 0.02, blue: 0.04, alpha: 0.42)
             glass.contentView = container
             addSubview(glass)
             glassView = glass
@@ -682,7 +682,7 @@ private final class BadgeView: NSView {
         glassView?.frame = bounds
         if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
             glass.cornerRadius = cornerRadius
-            container.layer?.backgroundColor = NSColor(srgbRed: 0.02, green: 0.03, blue: 0.06, alpha: 0.30).cgColor
+            container.layer?.backgroundColor = NSColor(srgbRed: 0.01, green: 0.02, blue: 0.04, alpha: 0.58).cgColor
             container.layer?.cornerRadius = cornerRadius
             container.layer?.cornerCurve = .continuous
             container.layer?.masksToBounds = true
