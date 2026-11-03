@@ -56,6 +56,7 @@ private struct PetState: Codable {
     var motionMap: [String: String]?
     var dnd: Bool?
     var fontScale: Double?
+    var hotkey: Bool?
 }
 
 private struct PetDayRecord: Codable {
@@ -799,6 +800,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var doNotDisturb = false
     private var fontScale: CGFloat = 1.0
     private var petHidden = false
+    private var hotKeyEnabled = true
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandler: EventHandlerRef?
 
@@ -812,6 +814,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         loadStats()
         loadMotions()
         makePanel()
+        applyHotKeySetting()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(screensChanged),
@@ -848,6 +851,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if let value = state.soundBalance, alertSounds.contains(where: { $0.id == value }) { soundBalance = value }
             if let value = state.soundVolume { soundVolume = min(max(value, 0), 3) }
             if let value = state.fontScale { fontScale = min(max(CGFloat(value), 0.85), 1.3) }
+            if let value = state.dnd { doNotDisturb = value }
+            if let value = state.hotkey { hotKeyEnabled = value }
             if let map = state.motionMap {
                 let known = Set(stateMotionGroups.flatMap { $0.key.split(separator: ",").map(String.init) })
                 for (stateKey, motionKey) in map where known.contains(stateKey) {
@@ -1287,17 +1292,25 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             let focused = loaded.filter { $0.tty == tty }
             if !focused.isEmpty { loaded = focused }
         }
+        let hadSessions = !sessions.isEmpty
         sessions = loaded
         updateAlertDot()
         guard let primary = sessions.first else {
             primaryID = nil
             applyState("idle")
+            if hadSessions, !goodbyePlayed,
+               let wave = motions.firstIndex(where: { $0.key == "waving" }) {
+                goodbyePlayed = true
+                overrideUntil = CACurrentMediaTime() + motions[wave].total + 0.2
+                applyMotion(index: wave, loop: false)
+            }
             updateBubble()
             updateBadge()
             updateIdleOpacity()
             return
         }
 
+        if goodbyePlayed { goodbyePlayed = false }
         let switched = primary.id != primaryID
         primaryID = primary.id
         statusTool = primary.tool
@@ -1489,7 +1502,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         if newState == "done" {
             doneBubbleUntil = CACurrentMediaTime() + 4.5
         }
-        if soundEnabled {
+        if soundEnabled && !doNotDisturb {
             switch newState {
             case "done": playSound(soundDone)
             case "failed": playSound(soundFailed)
@@ -1974,7 +1987,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         alertText = message
         alertUntil = CACurrentMediaTime() + 8
         updateBubble()
-        guard soundEnabled else { return }
+        guard soundEnabled, !doNotDisturb else { return }
         playSoundRepeated(sound.isEmpty ? soundWaiting : sound, times: repeats)
     }
 
@@ -1993,7 +2006,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private func updateIdleOpacity() {
         guard panel != nil else { return }
         let busyStates: Set<String> = ["thinking", "bash", "search", "tool", "waiting", "start", "failed"]
-        let busy = busyStates.contains(currentState) || CACurrentMediaTime() < doneBubbleUntil
+        let busy = busyStates.contains(currentState)
+            || CACurrentMediaTime() < doneBubbleUntil
+            || CACurrentMediaTime() < overrideUntil
         let dim = !busy && !hovered && !draggingPet
         idleDimmed = dim
         let target: CGFloat = dim ? 0.45 : 1.0
@@ -2005,7 +2020,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func updateBubble() {
-        guard bubblePanel != nil else { return }
+        guard bubblePanel != nil, !petHidden else { return }
         guard showBubble, let content = bubbleContent() else {
             bubbleCache = ""
             if bubbleShown {
@@ -2041,7 +2056,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func updateBadge() {
-        guard badgePanel != nil else { return }
+        guard badgePanel != nil, !petHidden else { return }
         guard showBadge, hovered else {
             badgeCache = ""
             if badgeShown {
@@ -2254,6 +2269,76 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         overrideUntil = CACurrentMediaTime() + motions[target].total + 0.1
     }
 
+    private static let hotKeyCallback: EventHandlerUPP = { _, _, userData in
+        guard let userData else { return OSStatus(eventNotHandledErr) }
+        Unmanaged<PetApp>.fromOpaque(userData).takeUnretainedValue().togglePetVisible()
+        return noErr
+    }
+
+    private func applyHotKeySetting() {
+        if hotKeyEnabled {
+            registerHotKey()
+        } else {
+            unregisterHotKey()
+            if petHidden { togglePetVisible() }
+        }
+    }
+
+    private func registerHotKey() {
+        guard hotKeyRef == nil else { return }
+        var spec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        InstallEventHandler(
+            GetApplicationEventTarget(),
+            PetApp.hotKeyCallback,
+            1,
+            &spec,
+            Unmanaged.passUnretained(self).toOpaque(),
+            &hotKeyHandler
+        )
+        let hotKeyID = EventHotKeyID(signature: OSType(0x43585054), id: 1)
+        RegisterEventHotKey(
+            UInt32(kVK_ANSI_P),
+            UInt32(cmdKey | optionKey),
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &hotKeyRef
+        )
+    }
+
+    private func unregisterHotKey() {
+        if let ref = hotKeyRef {
+            UnregisterEventHotKey(ref)
+            hotKeyRef = nil
+        }
+        if let handler = hotKeyHandler {
+            RemoveEventHandler(handler)
+            hotKeyHandler = nil
+        }
+    }
+
+    private func togglePetVisible() {
+        petHidden.toggle()
+        if petHidden {
+            hideStats()
+            bubbleShown = false
+            badgeShown = false
+            bubbleCache = ""
+            badgeCache = ""
+            bubblePanel?.orderOut(nil)
+            badgePanel?.orderOut(nil)
+            panel?.orderOut(nil)
+        } else {
+            panel?.orderFrontRegardless()
+            updateBubble()
+            updateBadge()
+            updateIdleOpacity()
+        }
+    }
+
     private func dragRide(_ dir: Int) {
         draggingPet = true
         updateIdleOpacity()
@@ -2303,7 +2388,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             soundBalance: soundBalance,
             soundVolume: soundVolume,
             motionMap: motionMap.isEmpty ? nil : motionMap,
-            fontScale: Double(fontScale)
+            dnd: doNotDisturb,
+            fontScale: Double(fontScale),
+            hotkey: hotKeyEnabled
         )
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: stateURL, options: .atomic)
@@ -2459,6 +2546,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         badgeItem.state = showBadge ? .on : .off
         menu.addItem(badgeItem)
 
+        let dndItem = NSMenuItem(
+            title: "勿扰模式（静音提醒）",
+            action: #selector(menuDND),
+            keyEquivalent: ""
+        )
+        dndItem.target = self
+        dndItem.state = doNotDisturb ? .on : .off
+        menu.addItem(dndItem)
+
         let soundItem = NSMenuItem(title: "提示音", action: nil, keyEquivalent: "")
         let soundMenu = NSMenu()
         let soundToggle = NSMenuItem(
@@ -2531,6 +2627,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         lockItem.target = self
         lockItem.state = lockedPet ? .on : .off
         menu.addItem(lockItem)
+
+        let hotKeyItem = NSMenuItem(
+            title: "⌥⌘P 显示/隐藏宠物",
+            action: #selector(menuHotKey),
+            keyEquivalent: ""
+        )
+        hotKeyItem.target = self
+        hotKeyItem.state = hotKeyEnabled ? .on : .off
+        menu.addItem(hotKeyItem)
 
         menu.addItem(.separator())
         let resetItem = NSMenuItem(
@@ -2640,6 +2745,17 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     @objc private func menuBadge() {
         showBadge.toggle()
         updateBadge()
+        saveState()
+    }
+
+    @objc private func menuDND() {
+        doNotDisturb.toggle()
+        saveState()
+    }
+
+    @objc private func menuHotKey() {
+        hotKeyEnabled.toggle()
+        applyHotKeySetting()
         saveState()
     }
 
@@ -2769,7 +2885,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func showStats() {
-        guard statsPanel != nil else { return }
+        guard statsPanel != nil, !petHidden else { return }
         lastUsageRead = 0
         refreshUsages()
         let text = statsAttributed()
