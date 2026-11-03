@@ -772,7 +772,6 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var index = 0
     private var idleIndex = 0
     private var cheer: [Int] = []
-    private var cheerPos = 0
     private var loop = true
     private var frameIndex = 0
     private var motionStart = CACurrentMediaTime()
@@ -2360,9 +2359,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func playNextCheer() {
-        guard !cheer.isEmpty else { return }
-        let target = cheer[cheerPos % cheer.count]
-        cheerPos += 1
+        let pool = cheer.filter { $0 != index }
+        guard let target = (pool.isEmpty ? cheer : pool).randomElement() else { return }
         applyMotion(index: target, loop: false)
         overrideUntil = CACurrentMediaTime() + motions[target].total + 0.1
     }
@@ -2558,6 +2556,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             entry.submenu = choices
             stateMenu.addItem(entry)
         }
+        stateMenu.addItem(.separator())
+        let resetStates = NSMenuItem(
+            title: "恢复默认",
+            action: #selector(menuResetStateMotion),
+            keyEquivalent: ""
+        )
+        resetStates.target = self
+        stateMenu.addItem(resetStates)
         stateItem.submenu = stateMenu
         menu.addItem(stateItem)
 
@@ -2841,6 +2847,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         for part in group.split(separator: ",") {
             motionMap[String(part)] = key
         }
+        overrideUntil = 0
+        saveState()
+        followStateMotion()
+    }
+
+    @objc private func menuResetStateMotion() {
+        motionMap.removeAll()
         overrideUntil = 0
         saveState()
         followStateMotion()
