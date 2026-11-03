@@ -159,6 +159,7 @@ private struct PetStatus: Decodable {
     var state: String
     var event: String?
     var ts: Double?
+    var turnStart: Double?
     var transcript: String?
     var cwd: String?
     var tool: String?
@@ -180,6 +181,7 @@ private struct Session {
     var message: String
     var tty: String?
     var term: String?
+    var turnStart: Double?
 
     var name: String {
         guard !cwd.isEmpty else { return "会话" }
@@ -1478,7 +1480,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 detail: status.detail ?? "",
                 message: status.message ?? "",
                 tty: tty,
-                term: term
+                term: term,
+                turnStart: status.turnStart
             ))
         }
         return result.sorted { a, b in
@@ -3265,15 +3268,17 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             case "UserPromptSubmit":
                 turnStartBySession[session.id] = session.ts
             case "Stop":
-                if let start = turnStartBySession[session.id], session.ts >= start {
+                if let start = session.turnStart ?? turnStartBySession[session.id],
+                   session.ts >= start {
                     turnDurationBySession[session.id] = session.ts - start
                     turnStartBySession.removeValue(forKey: session.id)
                 }
             default:
                 // a fast PreToolUse can overwrite UserPromptSubmit before the next
-                // poll, so fall back to the first active status we observe
+                // poll; the status carries the prompt time so the turn still starts
+                // at submission
                 if turnStartBySession[session.id] == nil, activeStates.contains(session.state) {
-                    turnStartBySession[session.id] = session.ts
+                    turnStartBySession[session.id] = session.turnStart ?? session.ts
                 }
             }
         }

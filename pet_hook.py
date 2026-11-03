@@ -102,6 +102,16 @@ def write_status(path, status):
     os.replace(tmp, path)
 
 
+def previous_turn_start(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            status = json.load(fh)
+        value = status.get("turnStart")
+        return value if isinstance(value, (int, float)) and value > 0 else None
+    except (OSError, ValueError):
+        return None
+
+
 def main():
     pet_id = os.environ.get("CODEX_PET_ID", "").strip()
     if not pet_id or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", pet_id):
@@ -144,10 +154,17 @@ def main():
                     message = json.dumps(error, ensure_ascii=False)
                 if not message:
                     message = response.get("stderr")
+        now = time.time()
+        if event == "SessionStart":
+            turn_start = None
+        elif event == "UserPromptSubmit":
+            turn_start = now
+        else:
+            turn_start = previous_turn_start(path)
         status = {
             "state": state,
             "event": event,
-            "ts": time.time(),
+            "ts": now,
             "sessionId": payload.get("session_id"),
             "transcript": payload.get("transcript_path"),
             "cwd": payload.get("cwd"),
@@ -157,6 +174,8 @@ def main():
             "prompt": clip(payload.get("prompt"), 300),
             "last": clip(payload.get("last_assistant_message"), 300),
         }
+        if turn_start is not None:
+            status["turnStart"] = turn_start
         write_status(path, status)
     except Exception:
         pass
