@@ -1319,14 +1319,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             overrideUntil = 0
             if wasOverride {
                 if currentState == "idle" || currentState == "done" {
-                    setMotion("idle", loop: true)
+                    setMotion(motionKey(for: "idle"), loop: true)
                 } else {
                     followStateMotion()
                 }
             } else if currentState == "failed" {
                 setMotion(motionKey(for: "thinking"), loop: true)
             } else {
-                setMotion("idle", loop: true)
+                setMotion(motionKey(for: "idle"), loop: true)
             }
             return
         }
