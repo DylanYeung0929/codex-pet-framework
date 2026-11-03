@@ -139,10 +139,13 @@ def main() -> None:
                 frame.getchannel("A").point(lambda v: 255 if v > ALPHA_MIN else 0).getbbox()
             )
 
-        x0 = min(b[0] for b in boxes) - MARGIN
-        y0 = min(b[1] for b in boxes) - MARGIN
-        x1 = max(b[2] for b in boxes) + MARGIN
-        y1 = max(b[3] for b in boxes) + MARGIN
+        visible = [b for b in boxes if b is not None]
+        if not visible:
+            raise SystemExit(f"{key} has no visible frames")
+        x0 = min(b[0] for b in visible) - MARGIN
+        y0 = min(b[1] for b in visible) - MARGIN
+        x1 = max(b[2] for b in visible) + MARGIN
+        y1 = max(b[3] for b in visible) + MARGIN
         x0 = max(0, x0)
         y0 = max(0, y0)
         x1 = min(im.width, x1)
