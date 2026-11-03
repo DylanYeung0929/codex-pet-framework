@@ -702,6 +702,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var statsPanel: PetPanel!
     private var statsView: BadgeView!
     private var statsShown = false
+    private enum StatsMode { case today, history }
+    private var statsMode = StatsMode.today
     private var statsSize = NSSize.zero
     private var statsHideTimer: Timer?
     private var statsTimer: Timer?
@@ -2696,6 +2698,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         statsItem.target = self
         menu.addItem(statsItem)
 
+        let historyItem = NSMenuItem(
+            title: "近 7 天统计",
+            action: #selector(menuStatsHistory),
+            keyEquivalent: ""
+        )
+        historyItem.target = self
+        menu.addItem(historyItem)
+
         menu.addItem(.separator())
         let topItem = NSMenuItem(
             title: "始终置顶",
@@ -2747,7 +2757,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         badgeCache = ""
         updateBubble()
         updateBadge()
-        if statsShown { showStats() }
+        if statsShown { showStats(mode: statsMode) }
         saveState()
     }
 
@@ -2907,15 +2917,22 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func menuStats() {
-        showStats()
+        showStats(mode: .today)
     }
 
-    private func showStats() {
+    @objc private func menuStatsHistory() {
+        showStats(mode: .history)
+    }
+
+    private func showStats(mode: StatsMode = .today) {
         guard statsPanel != nil, !petHidden else { return }
+        statsMode = mode
         lastUsageRead = 0
         refreshUsages()
-        let text = statsAttributed()
-        let size = statsView.fit(text, maxWidth: 340 * fontScale, minWidth: 190)
+        let text = statsAttributed(mode: mode)
+        let maxWidth: CGFloat = mode == .history ? 380 * fontScale : 340 * fontScale
+        let minWidth: CGFloat = mode == .history ? 220 * fontScale : 190
+        let size = statsView.fit(text, maxWidth: maxWidth, minWidth: minWidth)
         statsSize = size
         statsView.show(text, frame: NSRect(origin: .zero, size: size))
         statsPanel.setFrame(NSRect(origin: statsPanel.frame.origin, size: size), display: true)
@@ -2925,7 +2942,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         positionStats()
         statsHideTimer?.invalidate()
-        let timer = Timer(timeInterval: 6, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: mode == .history ? 10 : 6, repeats: false) { [weak self] _ in
             self?.hideStats()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -2960,22 +2977,41 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         )
     }
 
-    private func statsAttributed() -> NSAttributedString {
+    private func statsAttributed(mode: StatsMode = .today) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3.5
-        let text = NSMutableAttributedString(string: "今日统计", attributes: [
+        let text = NSMutableAttributedString(string: mode == .history ? "近 7 天统计" : "今日统计", attributes: [
             .font: NSFont.systemFont(ofSize: 12 * fontScale, weight: .semibold),
             .foregroundColor: NSColor.white.withAlphaComponent(0.97),
             .paragraphStyle: paragraph,
         ])
-        var lines = [
-            "会话 \(stats.seen.count) · 完成 \(stats.done) · 失败 \(stats.failed)",
-            "活跃时长 " + formatDuration(stats.activeSeconds),
-            "Token 消耗 " + formatTokens(stats.tokens),
-        ]
-        if !stats.history.isEmpty {
-            let recent = Array((stats.history + [PetDayRecord(from: stats)]).suffix(7))
-            lines.append("近 \(recent.count) 天完成 " + sparkline(recent.map { $0.done }))
+        var lines: [String]
+        if mode == .history {
+            let entries = Array((stats.history + [PetDayRecord(from: stats)]).suffix(7)).reversed()
+            let done = entries.reduce(0) { $0 + $1.done }
+            let failed = entries.reduce(0) { $0 + $1.failed }
+            let tokens = entries.reduce(0) { $0 + $1.tokens }
+            lines = ["合计 完成 \(done) · 失败 \(failed) · Token " + formatTokens(tokens), ""]
+            for record in entries {
+                let label = record.day.count >= 10 ? String(record.day.suffix(5)) : record.day
+                lines.append(label
+                    + "   完成 " + String(format: "%3d", record.done)
+                    + " · 失败 " + String(format: "%2d", record.failed)
+                    + " · " + formatTokens(record.tokens))
+            }
+            if stats.history.isEmpty {
+                lines.append("（历史数据从明天起逐日归档）")
+            }
+        } else {
+            lines = [
+                "会话 \(stats.seen.count) · 完成 \(stats.done) · 失败 \(stats.failed)",
+                "活跃时长 " + formatDuration(stats.activeSeconds),
+                "Token 消耗 " + formatTokens(stats.tokens),
+            ]
+            if !stats.history.isEmpty {
+                let recent = Array((stats.history + [PetDayRecord(from: stats)]).suffix(7))
+                lines.append("近 \(recent.count) 天完成 " + sparkline(recent.map { $0.done }))
+            }
         }
         for line in lines {
             text.append(NSAttributedString(string: "\n" + line, attributes: [
