@@ -4,6 +4,22 @@
 
 > 本仓库只包含框架代码。角色美术素材、会话运行数据与本地配置不在公开库中，需自备精灵表后构建。
 
+## 预览
+
+以下动图直接由精灵表帧生成，展示各状态对应的动作：
+
+| 待机 | 思考 | 搜索（照片轮盘） |
+|:---:|:---:|:---:|
+| <img src="demo/idle.gif" width="130"> | <img src="demo/review.gif" width="130"> | <img src="demo/running.gif" width="130"> |
+
+| 运行工具 | 等待回复 | 完成 |
+|:---:|:---:|:---:|
+| <img src="demo/debug.gif" width="130"> | <img src="demo/waiting.gif" width="130"> | <img src="demo/waving.gif" width="130"> |
+
+| 失败 | 拖动骑行 |
+|:---:|:---:|
+| <img src="demo/failed.gif" width="130"> | <img src="demo/running-right.gif" width="130"> |
+
 ## 功能
 
 - **状态动作**：思考 / 搜索 / 工具 / 等待 / 完成 / 失败 / 空闲分别映射到不同动画，可在右键「状态动画」中逐项自定义，映射持久化。
