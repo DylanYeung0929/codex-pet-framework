@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Carbon.HIToolbox
 import Darwin
 import Foundation
 import ImageIO
@@ -53,6 +54,33 @@ private struct PetState: Codable {
     var soundBalance: String?
     var soundVolume: Double?
     var motionMap: [String: String]?
+    var dnd: Bool?
+}
+
+private struct PetDayRecord: Codable {
+    var day: String
+    var done: Int
+    var failed: Int
+    var activeSeconds: Double
+    var tokens: Int
+
+    init(day: String, done: Int, failed: Int, activeSeconds: Double, tokens: Int) {
+        self.day = day
+        self.done = done
+        self.failed = failed
+        self.activeSeconds = activeSeconds
+        self.tokens = tokens
+    }
+
+    init(from stats: PetStats) {
+        self.init(
+            day: stats.day,
+            done: stats.done,
+            failed: stats.failed,
+            activeSeconds: stats.activeSeconds,
+            tokens: stats.tokens
+        )
+    }
 }
 
 private struct PetStats: Codable {
@@ -63,6 +91,7 @@ private struct PetStats: Codable {
     var tokens = 0
     var seen: [String] = []
     var usage: [String: Int] = [:]
+    var history: [PetDayRecord] = []
 
     init(day: String) {
         self.day = day
@@ -77,6 +106,7 @@ private struct PetStats: Codable {
         tokens = try c.decodeIfPresent(Int.self, forKey: .tokens) ?? 0
         seen = try c.decodeIfPresent([String].self, forKey: .seen) ?? []
         usage = try c.decodeIfPresent([String: Int].self, forKey: .usage) ?? [:]
+        history = try c.decodeIfPresent([PetDayRecord].self, forKey: .history) ?? []
     }
 }
 
@@ -124,6 +154,7 @@ private struct PetConfig: Decodable {
 
 private struct PetStatus: Decodable {
     var state: String
+    var event: String?
     var ts: Double?
     var transcript: String?
     var cwd: String?
@@ -137,6 +168,7 @@ private struct PetStatus: Decodable {
 private struct Session {
     var id: String
     var state: String
+    var event: String?
     var ts: Double
     var cwd: String
     var transcript: String?
@@ -662,6 +694,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var frameIndex = 0
     private var motionStart = CACurrentMediaTime()
     private var frameTimer: Timer?
+    private var frameInterval: TimeInterval = 1.0 / 60.0
     private var statusTimer: Timer?
     private var gcTimer: Timer?
     private var titlesTimer: Timer?
@@ -677,7 +710,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var balanceAlertThreshold = 5.0
     private var contextAlertThreshold = 0.8
     private var balanceLow = false
-    private var contextHigh = false
+    private var contextHighSessions = Set<String>()
+    private var turnStartBySession: [String: Double] = [:]
+    private var lastTurnBySession: [String: Double] = [:]
     private var alertText: String?
     private var alertUntil: Double = 0
     private var lastTokenScan: Double = 0
@@ -687,6 +722,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var balanceLine: String?
     private var lastBalanceRead: Double = 0
     private var balanceFetching = false
+    private var balanceFailures = 0
+    private var balanceRetryInterval: Double = 60
     private var scale: CGFloat = 0.4
     private var onTop = true
     private var savedCenterX: CGFloat?
@@ -728,6 +765,11 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var draggingPet = false
     private var lastTranscriptRead: Double = 0
     private var claimedSingleton = false
+    private var goodbyePlayed = false
+    private var doNotDisturb = false
+    private var petHidden = false
+    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyHandler: EventHandlerRef?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard claimSingleton() else {
@@ -739,6 +781,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         loadStats()
         loadMotions()
         makePanel()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screensChanged),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
         applyMotion(index: index, loop: loop)
         startTimers()
         pollSessions()
@@ -982,16 +1030,42 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         panel.setFrame(frame, display: false)
     }
 
-    private func startTimers() {
+    @objc private func screensChanged() {
+        guard panel != nil else { return }
+        clampToScreen()
+        savedCenterX = panel.frame.midX
+        savedBottomY = panel.frame.minY
+        layoutOverlays()
+        if statsShown { positionStats() }
+        saveState()
+    }
+
+    private func startFrameTimer(interval: TimeInterval) {
+        frameTimer?.invalidate()
         let timer = Timer(
-            timeInterval: 1.0 / 60.0,
+            timeInterval: interval,
             target: self,
             selector: #selector(tick),
             userInfo: nil,
             repeats: true
         )
+        timer.tolerance = interval * 0.2
         RunLoop.main.add(timer, forMode: .common)
         frameTimer = timer
+    }
+
+    private func updateFrameRate() {
+        let idle = currentState == "idle"
+            && !draggingPet
+            && CACurrentMediaTime() >= overrideUntil
+        let target = idle ? 1.0 / 15.0 : 1.0 / 60.0
+        guard abs(target - frameInterval) > 0.001 else { return }
+        frameInterval = target
+        startFrameTimer(interval: target)
+    }
+
+    private func startTimers() {
+        startFrameTimer(interval: frameInterval)
 
         let status = Timer(
             timeInterval: 0.3,
@@ -1130,6 +1204,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     @objc private func tick() {
         guard !motions.isEmpty else { return }
+        updateFrameRate()
         let motion = motions[index]
         let total = motion.total
         guard total > 0 else { return }
@@ -1236,6 +1311,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             result.append(Session(
                 id: id,
                 state: status.state,
+                event: status.event,
                 ts: status.ts ?? 0,
                 cwd: status.cwd ?? "",
                 transcript: status.transcript,
@@ -1699,7 +1775,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     private func refreshBalance() {
         let now = CACurrentMediaTime()
-        guard now - lastBalanceRead > 60, !balanceFetching else { return }
+        guard now - lastBalanceRead > balanceRetryInterval, !balanceFetching else { return }
         lastBalanceRead = now
         guard let cred = apiCredentials(), cred.host.contains("deepseek"),
               let url = URL(string: "https://" + cred.host + "/user/balance") else {
@@ -1711,11 +1787,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         var request = URLRequest(url: url)
         request.setValue("Bearer " + cred.token, forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 8
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
             var line = "API 余额 --"
             var value: Double?
             var symbol = ""
-            if let data,
+            var success = false
+            let statusOK = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+            if statusOK,
+               let data,
                let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let infos = root["balance_infos"] as? [[String: Any]],
                let info = infos.first,
@@ -1724,11 +1803,16 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 symbol = currency == "CNY" ? "¥" : (currency == "USD" ? "$" : currency + " ")
                 value = Double(total)
                 line = "API 余额 " + symbol + total
+                success = true
             }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.balanceFetching = false
                 self.balanceLine = line
+                self.balanceFailures = success ? 0 : min(self.balanceFailures + 1, 4)
+                self.balanceRetryInterval = success
+                    ? 60
+                    : min(60 * pow(2, Double(self.balanceFailures)), 600)
                 self.evaluateBalanceAlert(value, symbol: symbol)
                 self.updateBadge()
             }
@@ -1749,17 +1833,29 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func evaluateContextAlert() {
-        guard let id = primaryID, let used = usageBySession[id], used > 0, contextWindow > 0 else {
-            return
-        }
-        let ratio = Double(used) / Double(contextWindow)
-        if ratio >= contextAlertThreshold {
-            if !contextHigh {
-                contextHigh = true
-                triggerAlert("上下文已达 \(Int((ratio * 100).rounded()))%，建议 /compact")
+        guard contextWindow > 0 else { return }
+        contextHighSessions.formIntersection(Set(sessions.map { $0.id }))
+        var newlyHigh: [(id: String, percent: Int)] = []
+        for session in sessions {
+            guard let used = usageBySession[session.id], used > 0 else { continue }
+            let ratio = Double(used) / Double(contextWindow)
+            if ratio >= contextAlertThreshold {
+                if !contextHighSessions.contains(session.id) {
+                    contextHighSessions.insert(session.id)
+                    newlyHigh.append((session.id, Int((ratio * 100).rounded())))
+                }
+            } else if ratio < max(contextAlertThreshold - 0.05, 0.1) {
+                contextHighSessions.remove(session.id)
             }
-        } else if ratio < max(contextAlertThreshold - 0.05, 0.1) {
-            contextHigh = false
+        }
+        guard let first = newlyHigh.first else { return }
+        if newlyHigh.count == 1,
+           let session = sessions.first(where: { $0.id == first.id }) {
+            let name = shortName(displayName(session), limit: 12)
+            triggerAlert("「\(name)」上下文已达 \(first.percent)%，建议 /compact")
+        } else {
+            let percent = newlyHigh.map { $0.percent }.max() ?? Int((contextAlertThreshold * 100).rounded())
+            triggerAlert("\(newlyHigh.count) 个会话上下文已达 \(percent)% 以上，建议 /compact")
         }
     }
 
