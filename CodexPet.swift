@@ -514,7 +514,7 @@ private final class BubbleView: NSView {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
             glass.style = .regular
-            glass.tintColor = NSColor(srgbRed: 0.06, green: 0.08, blue: 0.12, alpha: 0.2)
+            glass.tintColor = NSColor(srgbRed: 0.02, green: 0.03, blue: 0.06, alpha: 0.16)
             glass.contentView = container
             addSubview(glass)
             glassView = glass
@@ -528,7 +528,7 @@ private final class BubbleView: NSView {
         glassView?.frame = bounds
         if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
             glass.cornerRadius = cornerRadius
-            container.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.09, blue: 0.13, alpha: 0.38).cgColor
+            container.layer?.backgroundColor = NSColor(srgbRed: 0.02, green: 0.03, blue: 0.06, alpha: 0.30).cgColor
             container.layer?.cornerRadius = cornerRadius
             container.layer?.cornerCurve = .continuous
             container.layer?.masksToBounds = true
@@ -668,7 +668,7 @@ private final class BadgeView: NSView {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
             glass.style = .regular
-            glass.tintColor = NSColor(srgbRed: 0.06, green: 0.08, blue: 0.12, alpha: 0.2)
+            glass.tintColor = NSColor(srgbRed: 0.02, green: 0.03, blue: 0.06, alpha: 0.16)
             glass.contentView = container
             addSubview(glass)
             glassView = glass
@@ -682,7 +682,7 @@ private final class BadgeView: NSView {
         glassView?.frame = bounds
         if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
             glass.cornerRadius = cornerRadius
-            container.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.09, blue: 0.13, alpha: 0.38).cgColor
+            container.layer?.backgroundColor = NSColor(srgbRed: 0.02, green: 0.03, blue: 0.06, alpha: 0.30).cgColor
             container.layer?.cornerRadius = cornerRadius
             container.layer?.cornerCurve = .continuous
             container.layer?.masksToBounds = true
@@ -1147,11 +1147,16 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         frameTimer = timer
     }
 
-    private func updateFrameRate() {
-        let idle = currentState == "idle"
+    // the idle loop also runs after a finished turn, while currentState stays "done"
+    private var idleAnimationActive: Bool {
+        motions.indices.contains(index)
+            && motions[index].key == "idle"
             && !draggingPet
             && CACurrentMediaTime() >= overrideUntil
-        let target = idle ? 1.0 / 15.0 : 1.0 / 60.0
+    }
+
+    private func updateFrameRate() {
+        let target = idleAnimationActive ? 1.0 / 15.0 : 1.0 / 60.0
         guard abs(target - frameInterval) > 0.001 else { return }
         frameInterval = target
         startFrameTimer(interval: target)
@@ -1302,7 +1307,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let total = motion.total
         guard total > 0 else { return }
 
-        let elapsed = (CACurrentMediaTime() - motionStart) * speed
+        let playback = idleAnimationActive ? speed * 0.5 : speed
+        let elapsed = (CACurrentMediaTime() - motionStart) * playback
         let repeats = max(motionRepeats, 1)
         let span = total * (loop ? 1 : Double(repeats))
         if !loop && elapsed >= span {
