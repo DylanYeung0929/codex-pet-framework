@@ -496,9 +496,11 @@ private final class BubbleView: NSView {
     }
 
     private let label = NSTextField(wrappingLabelWithString: "")
-    private let hPad: CGFloat = 12
-    private let vPad: CGFloat = 9
-    private let tailHeight: CGFloat = 7
+    private let container = NSView()
+    private var glassView: NSView?
+    private var hPad: CGFloat { 13 * BubbleView.scale }
+    private var vPad: CGFloat { 10 * BubbleView.scale }
+    private var cornerRadius: CGFloat { 16 * BubbleView.scale }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -507,7 +509,37 @@ private final class BubbleView: NSView {
         label.lineBreakMode = .byWordWrapping
         label.usesSingleLineMode = false
         label.isSelectable = false
-        addSubview(label)
+        container.wantsLayer = true
+        container.addSubview(label)
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.style = .regular
+            glass.tintColor = NSColor(srgbRed: 0.06, green: 0.08, blue: 0.12, alpha: 0.3)
+            glass.contentView = container
+            addSubview(glass)
+            glassView = glass
+        } else {
+            addSubview(container)
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        glassView?.frame = bounds
+        if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
+            glass.cornerRadius = cornerRadius
+            container.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.09, blue: 0.13, alpha: 0.62).cgColor
+            container.layer?.cornerRadius = cornerRadius
+            container.layer?.cornerCurve = .continuous
+            container.layer?.masksToBounds = true
+        }
+        container.frame = bounds
+        label.frame = NSRect(
+            x: hPad,
+            y: vPad,
+            width: max(0, bounds.width - hPad * 2),
+            height: max(0, bounds.height - vPad * 2)
+        )
     }
 
     required init?(coder: NSCoder) {
@@ -516,12 +548,12 @@ private final class BubbleView: NSView {
 
     private func attributed(_ content: Content) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 2.5
+        paragraph.lineSpacing = 2.5 * BubbleView.scale
         paragraph.lineBreakMode = .byWordWrapping
 
         let text = NSMutableAttributedString()
         if !content.rows.isEmpty {
-            paragraph.lineSpacing = 3.5
+            paragraph.lineSpacing = 3.5 * BubbleView.scale
             for (i, row) in content.rows.enumerated() {
                 text.append(NSAttributedString(string: "[" + row.name + "]", attributes: [
                     .font: BubbleView.prefixFont,
@@ -570,22 +602,24 @@ private final class BubbleView: NSView {
     }
 
     func fit(_ content: Content, maxWidth: CGFloat, maxLines: Int) -> NSSize {
-        let limit = max(160, maxWidth - hPad * 2)
+        let scale = BubbleView.scale
+        let limit = max(160 * scale, maxWidth - hPad * 2)
         // boundingRect under-reports mixed-font wrapped text; the layout manager
         // gives the height NSTextField actually needs to draw every line
         let storage = NSTextStorage(attributedString: attributed(content))
         let manager = NSLayoutManager()
-        let container = NSTextContainer(containerSize: NSSize(width: limit, height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        container.lineBreakMode = .byWordWrapping
-        manager.addTextContainer(container)
+        let textContainer = NSTextContainer(containerSize: NSSize(width: limit, height: .greatestFiniteMagnitude))
+        textContainer.lineFragmentPadding = 0
+        textContainer.lineBreakMode = .byWordWrapping
+        manager.addTextContainer(textContainer)
         storage.addLayoutManager(manager)
-        manager.ensureLayout(for: container)
-        let used = manager.usedRect(for: container)
-        let lineHeight = ceil(BubbleView.titleFont.boundingRectForFont.height) + (content.rows.isEmpty ? 2 : 6)
-        let textHeight = min(ceil(used.height) + 4, lineHeight * CGFloat(maxLines))
-        let width = min(maxWidth, max(150, ceil(used.width) + hPad * 2 + 4))
-        let height = max(textHeight, lineHeight) + vPad * 2 + tailHeight
+        manager.ensureLayout(for: textContainer)
+        let used = manager.usedRect(for: textContainer)
+        let lineHeight = ceil(BubbleView.titleFont.boundingRectForFont.height)
+            + (content.rows.isEmpty ? 2 : 6) * scale
+        let textHeight = min(ceil(used.height) + 4 * scale, lineHeight * CGFloat(maxLines))
+        let width = min(maxWidth, max(150 * scale, ceil(used.width) + hPad * 2 + 4 * scale))
+        let height = max(textHeight, lineHeight) + vPad * 2
         return NSSize(width: width, height: height)
     }
 
@@ -594,45 +628,33 @@ private final class BubbleView: NSView {
         label.maximumNumberOfLines = maxLines
         label.cell?.truncatesLastVisibleLine = true
         label.attributedStringValue = attributed(content)
-        label.frame = NSRect(
-            x: hPad,
-            y: tailHeight + vPad,
-            width: frame.width - hPad * 2,
-            height: frame.height - tailHeight - vPad * 2
-        )
+        needsLayout = true
+        layout()
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let background = NSColor(srgbRed: 0.10, green: 0.11, blue: 0.13, alpha: 0.90)
-        let body = NSRect(
-            x: 0.5,
-            y: tailHeight,
-            width: bounds.width - 1,
-            height: bounds.height - tailHeight - 0.5
+        guard glassView == nil else { return }
+        let path = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+            xRadius: cornerRadius,
+            yRadius: cornerRadius
         )
-        let path = NSBezierPath(roundedRect: body, xRadius: 9, yRadius: 9)
-        background.setFill()
+        NSColor(srgbRed: 0.10, green: 0.11, blue: 0.13, alpha: 0.90).setFill()
         path.fill()
         NSColor.white.withAlphaComponent(0.12).setStroke()
         path.lineWidth = 1
         path.stroke()
-
-        let cx = bounds.midX
-        let tail = NSBezierPath()
-        tail.move(to: NSPoint(x: cx - 6, y: tailHeight + 0.5))
-        tail.line(to: NSPoint(x: cx, y: 0.8))
-        tail.line(to: NSPoint(x: cx + 6, y: tailHeight + 0.5))
-        tail.close()
-        background.setFill()
-        tail.fill()
     }
 }
 
 private final class BadgeView: NSView {
     private let label = NSTextField(wrappingLabelWithString: "")
-    private let hPad: CGFloat = 12
-    private let vPad: CGFloat = 8
+    private let container = NSView()
+    private var glassView: NSView?
+    private var hPad: CGFloat { 12 * BubbleView.scale }
+    private var vPad: CGFloat { 9 * BubbleView.scale }
+    private var cornerRadius: CGFloat { min(14 * BubbleView.scale, bounds.height / 2) }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -641,7 +663,37 @@ private final class BadgeView: NSView {
         label.lineBreakMode = .byTruncatingTail
         label.usesSingleLineMode = false
         label.isSelectable = false
-        addSubview(label)
+        container.wantsLayer = true
+        container.addSubview(label)
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.style = .regular
+            glass.tintColor = NSColor(srgbRed: 0.06, green: 0.08, blue: 0.12, alpha: 0.3)
+            glass.contentView = container
+            addSubview(glass)
+            glassView = glass
+        } else {
+            addSubview(container)
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        glassView?.frame = bounds
+        if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
+            glass.cornerRadius = cornerRadius
+            container.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.09, blue: 0.13, alpha: 0.62).cgColor
+            container.layer?.cornerRadius = cornerRadius
+            container.layer?.cornerCurve = .continuous
+            container.layer?.masksToBounds = true
+        }
+        container.frame = bounds
+        label.frame = NSRect(
+            x: hPad,
+            y: vPad,
+            width: max(0, bounds.width - hPad * 2),
+            height: max(0, bounds.height - vPad * 2)
+        )
     }
 
     required init?(coder: NSCoder) {
@@ -649,40 +701,40 @@ private final class BadgeView: NSView {
     }
 
     func fit(_ text: NSAttributedString, maxWidth: CGFloat, minWidth: CGFloat) -> NSSize {
-        let limit = max(80, maxWidth - hPad * 2)
+        let scale = BubbleView.scale
+        let limit = max(80 * scale, maxWidth - hPad * 2)
         let storage = NSTextStorage(attributedString: text)
         let manager = NSLayoutManager()
-        let container = NSTextContainer(containerSize: NSSize(width: limit, height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        container.lineBreakMode = .byWordWrapping
-        manager.addTextContainer(container)
+        let textContainer = NSTextContainer(containerSize: NSSize(width: limit, height: .greatestFiniteMagnitude))
+        textContainer.lineFragmentPadding = 0
+        textContainer.lineBreakMode = .byWordWrapping
+        manager.addTextContainer(textContainer)
         storage.addLayoutManager(manager)
-        manager.ensureLayout(for: container)
-        let used = manager.usedRect(for: container)
+        manager.ensureLayout(for: textContainer)
+        let used = manager.usedRect(for: textContainer)
         let content = max(ceil(used.width), minWidth)
         // usedRect for mixed-size, tabbed text runs a few points short;
         // without slack the final line (API balance) is silently clipped.
-        return NSSize(width: min(maxWidth, content + hPad * 2 + 8), height: ceil(used.height) + vPad * 2 + 8)
+        return NSSize(
+            width: min(maxWidth, content + hPad * 2 + 8 * scale),
+            height: ceil(used.height) + vPad * 2 + 8 * scale
+        )
     }
 
     func show(_ text: NSAttributedString, frame: NSRect) {
         self.frame = frame
         label.attributedStringValue = text
-        label.frame = NSRect(
-            x: hPad,
-            y: vPad,
-            width: frame.width - hPad * 2,
-            height: frame.height - vPad * 2
-        )
+        needsLayout = true
+        layout()
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let radius = min(12, bounds.height / 2)
+        guard glassView == nil else { return }
         let path = NSBezierPath(
             roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-            xRadius: radius,
-            yRadius: radius
+            xRadius: cornerRadius,
+            yRadius: cornerRadius
         )
         NSColor(srgbRed: 0.10, green: 0.11, blue: 0.13, alpha: 0.92).setFill()
         path.fill()
@@ -1782,7 +1834,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let dim = NSColor.white.withAlphaComponent(0.55)
         let body = NSColor.white.withAlphaComponent(0.92)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3
+        paragraph.lineSpacing = 3 * fontScale
         paragraph.lineBreakMode = .byTruncatingTail
 
         let text = NSMutableAttributedString()
@@ -2979,7 +3031,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     private func statsAttributed(mode: StatsMode = .today) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3.5
+        paragraph.lineSpacing = 3.5 * fontScale
         let text = NSMutableAttributedString(string: mode == .history ? "近 7 天统计" : "今日统计", attributes: [
             .font: NSFont.systemFont(ofSize: 12 * fontScale, weight: .semibold),
             .foregroundColor: NSColor.white.withAlphaComponent(0.97),
