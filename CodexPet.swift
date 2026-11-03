@@ -2219,6 +2219,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         for url in entries where url.pathExtension == "pid" {
             let id = url.deletingPathExtension().lastPathComponent
             pidIDs.insert(id)
+            // pet.pid is this process's own singleton lock, not a session
+            guard id != "pet" else { continue }
             let raw = ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let pid = Int32(raw) ?? -1
@@ -2239,6 +2241,18 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 try? fm.removeItem(at: url)
             } else {
                 live += 1
+            }
+        }
+
+        for url in entries where url.pathExtension == "term" {
+            let id = url.deletingPathExtension().lastPathComponent
+            guard !pidIDs.contains(id),
+                  !fm.fileExists(atPath: runDir.appendingPathComponent(id + ".json").path)
+            else { continue }
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+            if let mtime, Date().timeIntervalSince(mtime) > 7200 {
+                try? fm.removeItem(at: url)
             }
         }
 
