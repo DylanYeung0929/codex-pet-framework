@@ -1896,9 +1896,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         return (token, host)
     }
 
-    private func refreshBalance() {
+    private func refreshBalance(force: Bool = false) {
         let now = CACurrentMediaTime()
-        guard now - lastBalanceRead > balanceRetryInterval, !balanceFetching else { return }
+        let interval = force ? 2.0 : balanceRetryInterval
+        guard now - lastBalanceRead > interval, !balanceFetching else { return }
         lastBalanceRead = now
         guard let cred = apiCredentials(), cred.host.contains("deepseek"),
               let url = URL(string: "https://" + cred.host + "/user/balance") else {
@@ -1931,7 +1932,11 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.balanceFetching = false
-                self.balanceLine = line
+                if success || self.balanceLine == nil
+                    || self.balanceLine == "API 余额 查询中…"
+                    || self.balanceLine == "API 余额 --" {
+                    self.balanceLine = line
+                }
                 self.balanceFailures = success ? 0 : min(self.balanceFailures + 1, 4)
                 self.balanceRetryInterval = success
                     ? 60
@@ -2087,7 +2092,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             refreshTranscript(force: true)
             lastUsageRead = 0
             refreshUsages()
-            refreshBalance()
+            refreshBalance(force: true)
         }
         updateBubble()
         updateBadge()
