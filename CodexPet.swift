@@ -800,6 +800,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var fontScale: CGFloat = 1.0
     private var petHidden = false
     private var hotKeyEnabled = true
+    private var hotKeyFailed = false
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandler: EventHandlerRef?
 
@@ -2298,11 +2299,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     private func registerHotKey() {
         guard hotKeyRef == nil else { return }
+        hotKeyFailed = false
         var spec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
         )
-        InstallEventHandler(
+        let installed = InstallEventHandler(
             GetApplicationEventTarget(),
             PetApp.hotKeyCallback,
             1,
@@ -2310,15 +2312,27 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             Unmanaged.passUnretained(self).toOpaque(),
             &hotKeyHandler
         )
-        let hotKeyID = EventHotKeyID(signature: OSType(0x43585054), id: 1)
-        RegisterEventHotKey(
-            UInt32(kVK_ANSI_P),
-            UInt32(cmdKey | optionKey),
-            hotKeyID,
-            GetApplicationEventTarget(),
-            0,
-            &hotKeyRef
-        )
+        var status = installed
+        if installed == noErr {
+            let hotKeyID = EventHotKeyID(signature: OSType(0x43585054), id: 1)
+            status = RegisterEventHotKey(
+                UInt32(kVK_ANSI_P),
+                UInt32(cmdKey | optionKey),
+                hotKeyID,
+                GetApplicationEventTarget(),
+                0,
+                &hotKeyRef
+            )
+        }
+        guard status != noErr else { return }
+        // another app already owns the shortcut; leave the feature visibly off
+        if let handler = hotKeyHandler {
+            RemoveEventHandler(handler)
+            hotKeyHandler = nil
+        }
+        hotKeyFailed = true
+        hotKeyEnabled = false
+        saveState()
     }
 
     private func unregisterHotKey() {
@@ -2641,7 +2655,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         menu.addItem(lockItem)
 
         let hotKeyItem = NSMenuItem(
-            title: "⌥⌘P 显示/隐藏宠物",
+            title: hotKeyFailed ? "⌥⌘P 显示/隐藏宠物（注册失败）" : "⌥⌘P 显示/隐藏宠物",
             action: #selector(menuHotKey),
             keyEquivalent: ""
         )
