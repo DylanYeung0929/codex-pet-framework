@@ -514,7 +514,7 @@ private final class BubbleView: NSView {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
             glass.style = .regular
-            glass.tintColor = NSColor(srgbRed: 0.06, green: 0.08, blue: 0.12, alpha: 0.3)
+            glass.tintColor = NSColor(srgbRed: 0.06, green: 0.08, blue: 0.12, alpha: 0.2)
             glass.contentView = container
             addSubview(glass)
             glassView = glass
@@ -528,7 +528,7 @@ private final class BubbleView: NSView {
         glassView?.frame = bounds
         if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
             glass.cornerRadius = cornerRadius
-            container.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.09, blue: 0.13, alpha: 0.62).cgColor
+            container.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.09, blue: 0.13, alpha: 0.38).cgColor
             container.layer?.cornerRadius = cornerRadius
             container.layer?.cornerCurve = .continuous
             container.layer?.masksToBounds = true
@@ -668,7 +668,7 @@ private final class BadgeView: NSView {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
             glass.style = .regular
-            glass.tintColor = NSColor(srgbRed: 0.06, green: 0.08, blue: 0.12, alpha: 0.3)
+            glass.tintColor = NSColor(srgbRed: 0.06, green: 0.08, blue: 0.12, alpha: 0.2)
             glass.contentView = container
             addSubview(glass)
             glassView = glass
@@ -682,7 +682,7 @@ private final class BadgeView: NSView {
         glassView?.frame = bounds
         if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
             glass.cornerRadius = cornerRadius
-            container.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.09, blue: 0.13, alpha: 0.62).cgColor
+            container.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.09, blue: 0.13, alpha: 0.38).cgColor
             container.layer?.cornerRadius = cornerRadius
             container.layer?.cornerCurve = .continuous
             container.layer?.masksToBounds = true
