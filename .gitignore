@@ -1,0 +1,11 @@
+.DS_Store
+*.tmp
+bin/
+cache/
+assets/
+run/
+source/*.webp
+source/*.png
+source/*.jpg
+stats.json
+window.json
