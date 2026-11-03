@@ -57,6 +57,7 @@ private struct PetState: Codable {
     var dnd: Bool?
     var fontScale: Double?
     var hotkey: Bool?
+    var idleOpacity: Double?
 }
 
 private struct PetDayRecord: Codable {
@@ -789,6 +790,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var emptySince: Date?
     private var lastUsageRead: Double = 0
     private var idleDimmed = false
+    private var idleOpacity: CGFloat = 0.6
     private var balanceAlertThreshold = 5.0
     private var contextAlertThreshold = 0.8
     private var balanceLow = false
@@ -907,6 +909,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if let value = state.fontScale { fontScale = min(max(CGFloat(value), 0.85), 1.3) }
             if let value = state.dnd { doNotDisturb = value }
             if let value = state.hotkey { hotKeyEnabled = value }
+            if let value = state.idleOpacity { idleOpacity = min(max(CGFloat(value), 0.1), 1.0) }
             if let map = state.motionMap {
                 let known = Set(stateMotionGroups.flatMap { $0.key.split(separator: ",").map(String.init) })
                 for (stateKey, motionKey) in map where known.contains(stateKey) {
@@ -1345,6 +1348,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func pollSessions() {
+        syncHoverFromPointer()
         var loaded = loadSessions()
         trackSessionStates(loaded)
         trackTurnEvents(loaded)
@@ -2084,7 +2088,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             || CACurrentMediaTime() < overrideUntil
         let dim = !busy && !hovered && !draggingPet
         idleDimmed = dim
-        let target: CGFloat = dim ? 0.45 : 1.0
+        let target: CGFloat = dim ? idleOpacity : 1.0
         guard abs(panel.alphaValue - target) > 0.01 else { return }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.25
@@ -2155,7 +2159,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         layoutOverlays()
     }
 
+    private func syncHoverFromPointer() {
+        guard let panel, !petHidden, !draggingPet else { return }
+        setHover(panel.frame.contains(NSEvent.mouseLocation))
+    }
+
     private func setHover(_ inside: Bool) {
+        guard inside != hovered else { return }
         hovered = inside
         if inside {
             refreshTranscript(force: true)
@@ -2476,7 +2486,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             motionMap: motionMap.isEmpty ? nil : motionMap,
             dnd: doNotDisturb,
             fontScale: Double(fontScale),
-            hotkey: hotKeyEnabled
+            hotkey: hotKeyEnabled,
+            idleOpacity: Double(idleOpacity)
         )
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: stateURL, options: .atomic)
@@ -2613,6 +2624,22 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         speedItem.submenu = speedMenu
         menu.addItem(speedItem)
+
+        let opacityItem = NSMenuItem(title: "空闲透明度", action: nil, keyEquivalent: "")
+        let opacityMenu = NSMenu()
+        for value in [0.25, 0.4, 0.6, 0.75, 0.9, 1.0] {
+            let item = NSMenuItem(
+                title: String(format: "%.0f%%", value * 100),
+                action: #selector(menuIdleOpacity(_:)),
+                keyEquivalent: ""
+            )
+            item.tag = Int((value * 100).rounded())
+            item.target = self
+            if abs(idleOpacity - CGFloat(value)) < 0.01 { item.state = .on }
+            opacityMenu.addItem(item)
+        }
+        opacityItem.submenu = opacityMenu
+        menu.addItem(opacityItem)
 
         let bubbleItem = NSMenuItem(
             title: "显示气泡",
@@ -2821,6 +2848,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     @objc private func menuSpeed(_ sender: NSMenuItem) {
         speed = Double(sender.tag) / 100.0
+        saveState()
+    }
+
+    @objc private func menuIdleOpacity(_ sender: NSMenuItem) {
+        idleOpacity = min(max(CGFloat(sender.tag) / 100.0, 0.1), 1.0)
+        updateIdleOpacity()
         saveState()
     }
 
