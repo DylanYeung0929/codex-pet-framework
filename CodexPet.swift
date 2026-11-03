@@ -1471,9 +1471,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             let cut = chunk.distance(from: chunk.startIndex, to: lastNewline) + 1
             let body = chunk.prefix(cut)
             state.offset += UInt64(cut)
-            for line in body.split(separator: 0x0A) {
-                guard !line.isEmpty,
-                      let root = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+            for line in body.split(separator: 0x0A) where line.range(of: Self.usageNeedle) != nil {
+                guard let root = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
                       let message = root["message"] as? [String: Any],
                       let usage = message["usage"] as? [String: Any] else { continue }
                 let id = (message["id"] as? String)
@@ -1570,6 +1569,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    private static let assistantNeedleFlat = Data("\"type\":\"assistant\"".utf8)
+    private static let assistantNeedleSpaced = Data("\"type\": \"assistant\"".utf8)
+    private static let usageNeedle = Data("\"usage\"".utf8)
+
+    private func isAssistantLine(_ line: Data.SubSequence) -> Bool {
+        line.range(of: Self.assistantNeedleFlat) != nil
+            || line.range(of: Self.assistantNeedleSpaced) != nil
+    }
+
     private func assistantText(_ line: Data.SubSequence) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
               (object["type"] as? String) == "assistant",
@@ -1600,7 +1608,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 data = Data(data[data.index(after: newline)...])
             }
             var latest: String?
-            for line in data.split(separator: 0x0A) {
+            for line in data.split(separator: 0x0A) where isAssistantLine(line) {
                 if let value = assistantText(line) { latest = value }
             }
             if let latest { state.text = latest }
@@ -1617,7 +1625,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             let cut = data.distance(from: data.startIndex, to: newline) + 1
             state.offset += UInt64(cut)
             var latest: String?
-            for line in data.prefix(cut).split(separator: 0x0A) {
+            for line in data.prefix(cut).split(separator: 0x0A) where isAssistantLine(line) {
                 if let value = assistantText(line) { latest = value }
             }
             if let latest { state.text = latest }
@@ -3028,6 +3036,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func trackTurnEvents(_ loaded: [Session]) {
+        let liveIDs = Set(loaded.map { $0.id })
+        turnStartBySession = turnStartBySession.filter { liveIDs.contains($0.key) }
+        turnDurationBySession = turnDurationBySession.filter { liveIDs.contains($0.key) }
         let activeStates: Set<String> = ["thinking", "bash", "search", "tool", "waiting", "start"]
         for session in loaded {
             guard session.ts > 0 else { continue }
