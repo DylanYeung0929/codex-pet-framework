@@ -1150,12 +1150,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         frameTimer = timer
     }
 
-    // the idle loop also runs after a finished turn, while currentState stays "done"
+    // idle state uses its mapped motion; after a finished turn the loop also
+    // returns to that motion while currentState stays "done"
     private var idleAnimationActive: Bool {
-        motions.indices.contains(index)
-            && motions[index].key == "idle"
-            && !draggingPet
-            && CACurrentMediaTime() >= overrideUntil
+        guard !draggingPet, CACurrentMediaTime() >= overrideUntil else { return false }
+        if currentState == "idle" { return true }
+        return motions.indices.contains(index) && motions[index].key == motionKey(for: "idle")
     }
 
     private func updateFrameRate() {
