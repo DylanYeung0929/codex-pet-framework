@@ -1721,7 +1721,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 let input = usage["input_tokens"] as? Int ?? 0
                 let created = usage["cache_creation_input_tokens"] as? Int ?? 0
                 let cached = usage["cache_read_input_tokens"] as? Int ?? 0
-                let total = input + created + cached
+                let output = usage["output_tokens"] as? Int ?? 0
+                let total = input + created + cached + output
                 if total > 0 { info.used = total }
             }
             if info.text == nil || info.thinking == nil,
