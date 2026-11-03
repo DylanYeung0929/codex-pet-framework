@@ -4,6 +4,22 @@
 
 > 本仓库只包含框架代码。角色美术素材、会话运行数据与本地配置不在公开库中，需自备精灵表后构建。
 
+## 快速开始
+
+```zsh
+git clone https://github.com/DylanYeung0929/codex-pet-framework.git ~/.claude/pet
+cd ~/.claude/pet
+# 把 Codex hatch-pet V2 精灵表放到 source/atlas.webp
+./install.sh
+```
+
+安装脚本会构建 `bin/CodexPet`、合并 `~/.claude/settings.json` 的 hooks、向 `~/.zshrc` 写入带标记的 `claude()` 包装函数。完成后新开终端运行 `claude` 即可。
+
+- 自定义位置：`CODEX_PET_DIR=~/somewhere ./install.sh`（安装器会把该路径写进 zshrc）
+- 启停：`~/.claude/pet/petctl.sh start|stop|restart|status`
+- 卸载：`~/.claude/pet/uninstall.sh`，加 `--purge` 一并删除统计与窗口状态
+- 临时禁用（不卸载）：`export CODEX_PET_DISABLED=1`
+
 ## 预览
 
 以下动图直接由精灵表帧生成，展示各状态对应的动作：
@@ -42,9 +58,14 @@
 ```
 CodexPet.swift     AppKit 浮窗主程序（单文件）
 pet_hook.py        Claude Code hooks → 状态文件桥
+pet_wrapper.zsh    zsh claude() 包装函数（由 install.sh 写入 ~/.zshrc）
+install.sh         一键安装：构建 + hooks + zshrc
+uninstall.sh       卸载 hooks 与包装函数（--purge 删除整个目录）
+petctl.sh          宠物进程控制：start / stop / restart / status
 build_assets.py    精灵表切帧工具（生成 assets/manifest.json 与逐帧 PNG）
 build.sh           构建脚本
 config.json        上下文窗口与预警阈值
+LICENSE            MIT
 source/            放置 atlas.webp（不入库）
 ```
 
@@ -73,9 +94,11 @@ python3 -m pip install pillow   # 如未安装
 
 ## 接入 Claude Code
 
+`./install.sh` 会自动完成下面的 Hook 桥与包装函数配置，并保留原文件为 `.pet-backup`。如需手动配置或排查问题，见下。
+
 ### 1. Hook 桥
 
-将 `pet_hook.py` 放到 `~/.claude/pet/`，在 `~/.claude/settings.json` 注册以下 hooks（命令里的路径按实际位置修改）：
+在 `~/.claude/settings.json` 注册以下 hooks（命令里的路径按实际位置修改）：
 
 ```json
 {
@@ -95,41 +118,15 @@ python3 -m pip install pillow   # 如未安装
 
 ### 2. Shell 包装函数
 
-在 `~/.zshrc` 末尾添加（路径按实际位置修改）：
+在 `~/.zshrc` 末尾添加一行（`pet_wrapper.zsh` 会按 `CODEX_PET_DIR` 定位，默认 `~/.claude/pet`）：
 
 ```zsh
-claude() {
-  local pet="$HOME/.claude/pet/bin/CodexPet"
-  local pet_id=""
-  local show_pet=1
-  [[ -t 1 ]] || show_pet=0
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      -p|--print|--version|-v|--help|-h) show_pet=0 ;;
-    esac
-  done
-  if (( show_pet )) && [[ -x "$pet" && -z "$CODEX_PET_DISABLED" ]]; then
-    pet_id="pet-$$-$RANDOM-$(date +%s)"
-    mkdir -p "$HOME/.claude/pet/run"
-    print -r -- $$ > "$HOME/.claude/pet/run/$pet_id.pid"
-    print -r -- "${TERM_PROGRAM:-Apple_Terminal}|${TTY:-}" > "$HOME/.claude/pet/run/$pet_id.term"
-    "$pet" >/dev/null 2>&1 &!
-  fi
-  local rc=0
-  if [[ -n "$pet_id" ]]; then
-    ( export CODEX_PET_ID="$pet_id"; command claude "$@" )
-    rc=$?
-    rm -f "$HOME/.claude/pet/run/$pet_id.json" "$HOME/.claude/pet/run/$pet_id.pid" "$HOME/.claude/pet/run/$pet_id.term"
-  else
-    command claude "$@"
-    rc=$?
-  fi
-  return $rc
-}
+source ~/.claude/pet/pet_wrapper.zsh
 ```
 
-已打开的旧终端不会自动加载新函数，需新开终端或 `source ~/.zshrc`。停用宠物：`export CODEX_PET_DISABLED=1`。
+安装器写入的是带 `# >>> CodexPet >>>` / `# <<< CodexPet <<<` 标记的块，卸载时可精确移除。若 `~/.zshrc` 里已有其他来源的 `claude()` 函数，安装器只提示不覆盖，需手动合并。
+
+已打开的旧终端不会自动加载新函数，需新开终端或 `source ~/.zshrc`。
 
 ## 配置
 
@@ -150,10 +147,14 @@ claude() {
 ## 启动
 
 ```zsh
-nohup ~/.claude/pet/bin/CodexPet >/dev/null 2>&1 & disown
+~/.claude/pet/petctl.sh start     # 也支持 stop / restart / status
 ```
 
-不要用 `open` 启动裸可执行文件——会弹出终端窗口，关窗时宠物一并被杀。
+手动启动时不要用 `open`——会弹出终端窗口，关窗时宠物一并被杀：
+
+```zsh
+nohup ~/.claude/pet/bin/CodexPet >/dev/null 2>&1 & disown
+```
 
 ## 说明
 
@@ -164,3 +165,7 @@ nohup ~/.claude/pet/bin/CodexPet >/dev/null 2>&1 & disown
 ## 隐私
 
 公开仓库不包含：角色美术素材（`source/*.webp`、`assets/`）、会话运行数据（`run/`）、统计与窗口状态（`stats.json`、`window.json`）、构建产物与缓存。代码本身不含个人标识信息。
+
+## 许可证
+
+[MIT](LICENSE)
