@@ -55,6 +55,7 @@ private struct PetState: Codable {
     var soundVolume: Double?
     var motionMap: [String: String]?
     var dnd: Bool?
+    var fontScale: Double?
 }
 
 private struct PetDayRecord: Codable {
@@ -470,10 +471,11 @@ private final class AlertDotView: NSView {
 }
 
 private final class BubbleView: NSView {
-    static let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
-    static let detailFont = NSFont.systemFont(ofSize: 11)
-    static let monoFont = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
-    static let prefixFont = NSFont.systemFont(ofSize: 10, weight: .medium)
+    static var scale: CGFloat = 1.0
+    static var titleFont: NSFont { NSFont.systemFont(ofSize: 12 * scale, weight: .semibold) }
+    static var detailFont: NSFont { NSFont.systemFont(ofSize: 11 * scale) }
+    static var monoFont: NSFont { NSFont.monospacedSystemFont(ofSize: 10.5 * scale, weight: .regular) }
+    static var prefixFont: NSFont { NSFont.systemFont(ofSize: 10 * scale, weight: .medium) }
 
     struct Row {
         var name: String
@@ -791,6 +793,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var claimedSingleton = false
     private var goodbyePlayed = false
     private var doNotDisturb = false
+    private var fontScale: CGFloat = 1.0
     private var petHidden = false
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandler: EventHandlerRef?
@@ -840,6 +843,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if let value = state.soundWaiting, alertSounds.contains(where: { $0.id == value }) { soundWaiting = value }
             if let value = state.soundBalance, alertSounds.contains(where: { $0.id == value }) { soundBalance = value }
             if let value = state.soundVolume { soundVolume = min(max(value, 0), 3) }
+            if let value = state.fontScale { fontScale = min(max(CGFloat(value), 0.85), 1.3) }
             if let map = state.motionMap {
                 let known = Set(stateMotionGroups.flatMap { $0.key.split(separator: ",").map(String.init) })
                 for (stateKey, motionKey) in map where known.contains(stateKey) {
@@ -851,6 +855,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             scale = CGFloat(value)
         }
         scale = min(max(scale, 0.15), 1.5)
+        BubbleView.scale = fontScale
     }
 
     private func loadConfig() {
@@ -1739,10 +1744,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func badgeAttributed() -> (NSAttributedString, String, CGFloat) {
-        let nameFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        let stateFont = NSFont.systemFont(ofSize: 11, weight: .medium)
-        let pctFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
-        let subFont = NSFont.systemFont(ofSize: 10.5, weight: .regular)
+        let nameFont = NSFont.systemFont(ofSize: 11 * fontScale, weight: .semibold)
+        let stateFont = NSFont.systemFont(ofSize: 11 * fontScale, weight: .medium)
+        let pctFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5 * fontScale, weight: .regular)
+        let subFont = NSFont.systemFont(ofSize: 10.5 * fontScale, weight: .regular)
         let dim = NSColor.white.withAlphaComponent(0.55)
         let body = NSColor.white.withAlphaComponent(0.92)
         let paragraph = NSMutableParagraphStyle()
@@ -2043,7 +2048,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         if badgeShown && key == badgeCache { return }
         badgeCache = key
 
-        let size = badgeView.fit(attributed, maxWidth: 380, minWidth: minWidth)
+        let size = badgeView.fit(attributed, maxWidth: 380 * fontScale, minWidth: minWidth)
         badgeSize = size
         badgeView.show(attributed, frame: NSRect(origin: .zero, size: size))
         badgePanel.setFrame(NSRect(origin: badgePanel.frame.origin, size: size), display: true)
@@ -2289,7 +2294,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             soundWaiting: soundWaiting,
             soundBalance: soundBalance,
             soundVolume: soundVolume,
-            motionMap: motionMap.isEmpty ? nil : motionMap
+            motionMap: motionMap.isEmpty ? nil : motionMap,
+            fontScale: Double(fontScale)
         )
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: stateURL, options: .atomic)
@@ -2387,6 +2393,25 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         sizeItem.submenu = sizeMenu
         menu.addItem(sizeItem)
+
+        let fontItem = NSMenuItem(title: "字号", action: nil, keyEquivalent: "")
+        let fontMenu = NSMenu()
+        let fontChoices: [(Double, String)] = [
+            (0.85, "小"), (1.0, "标准"), (1.15, "大"), (1.3, "特大"),
+        ]
+        for (value, label) in fontChoices {
+            let item = NSMenuItem(
+                title: label,
+                action: #selector(menuFontScale(_:)),
+                keyEquivalent: ""
+            )
+            item.tag = Int((value * 100).rounded())
+            item.target = self
+            if abs(fontScale - CGFloat(value)) < 0.01 { item.state = .on }
+            fontMenu.addItem(item)
+        }
+        fontItem.submenu = fontMenu
+        menu.addItem(fontItem)
 
         let speedItem = NSMenuItem(title: "动画速度", action: nil, keyEquivalent: "")
         let speedMenu = NSMenu()
@@ -2576,6 +2601,17 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         setScale(CGFloat(sender.tag) / 100.0)
     }
 
+    @objc private func menuFontScale(_ sender: NSMenuItem) {
+        fontScale = min(max(CGFloat(sender.tag) / 100.0, 0.85), 1.3)
+        BubbleView.scale = fontScale
+        bubbleCache = ""
+        badgeCache = ""
+        updateBubble()
+        updateBadge()
+        if statsShown { showStats() }
+        saveState()
+    }
+
     @objc private func menuSpeed(_ sender: NSMenuItem) {
         speed = Double(sender.tag) / 100.0
         saveState()
@@ -2729,7 +2765,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         lastUsageRead = 0
         refreshUsages()
         let text = statsAttributed()
-        let size = statsView.fit(text, maxWidth: 340, minWidth: 190)
+        let size = statsView.fit(text, maxWidth: 340 * fontScale, minWidth: 190)
         statsSize = size
         statsView.show(text, frame: NSRect(origin: .zero, size: size))
         statsPanel.setFrame(NSRect(origin: statsPanel.frame.origin, size: size), display: true)
@@ -2778,7 +2814,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3.5
         let text = NSMutableAttributedString(string: "今日统计", attributes: [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .font: NSFont.systemFont(ofSize: 12 * fontScale, weight: .semibold),
             .foregroundColor: NSColor.white.withAlphaComponent(0.97),
             .paragraphStyle: paragraph,
         ])
@@ -2789,7 +2825,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         ]
         for line in lines {
             text.append(NSAttributedString(string: "\n" + line, attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 11 * fontScale, weight: .regular),
                 .foregroundColor: NSColor.white.withAlphaComponent(0.72),
                 .paragraphStyle: paragraph,
             ]))
