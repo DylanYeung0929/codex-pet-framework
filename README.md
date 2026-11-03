@@ -133,11 +133,13 @@ claude() {
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `contextWindow` | 200000 | 上下文百分比的分母 |
+| `contextWindow` | 1000000 | 上下文百分比的分母，需与模型实际窗口一致（如 DeepSeek Flash 为 1M） |
 | `balanceAlert` | 5 | 余额低于该值（元）提醒一次 |
 | `contextAlert` | 0.8 | 上下文占用达到该比例提醒一次 |
 
 余额接口：读取 `~/.claude/settings.json` 里 env 的 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`，host 含 `deepseek` 时请求 `/user/balance`，60 秒缓存。
+
+使用非 Anthropic 模型时，还需在 `~/.claude/settings.json` 的 `env` 中设置 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`（如 DeepSeek Flash 为 `"1000000"`），否则 Claude Code 会对未识别模型按 200k 计算并过早自动压缩；修改后需新开会话生效。
 
 其他状态（窗口位置、大小、速度、动画映射、音效、显示开关）保存在 `window.json`，运行数据在 `run/`、`stats.json`，均不入库。
 

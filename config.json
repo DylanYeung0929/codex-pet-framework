@@ -1,5 +1,5 @@
 {
-  "contextWindow": 200000,
+  "contextWindow": 1000000,
   "balanceAlert": 5,
   "contextAlert": 0.8
 }
