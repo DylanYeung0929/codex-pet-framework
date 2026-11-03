@@ -217,6 +217,7 @@ private func processName(_ pid: Int32) -> String? {
 
 private struct TranscriptInfo {
     var thinking: String?
+    var text: String?
     var used: Int?
     var model: String?
 }
@@ -225,6 +226,11 @@ private struct TranscriptUsageState {
     var offset: UInt64 = 0
     var tokens = 0
     var seen: Set<String> = []
+}
+
+private struct TranscriptTextState {
+    var offset: UInt64 = 0
+    var text = ""
 }
 
 private func argValue(_ flag: String) -> String? {
@@ -261,6 +267,15 @@ private func tailSnippet(_ text: String, _ limit: Int) -> String {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     guard flattened.count > limit else { return flattened }
     return "…" + String(flattened.suffix(limit))
+}
+
+private func headSnippet(_ text: String, _ limit: Int) -> String {
+    let flattened = text
+        .replacingOccurrences(of: "\n", with: " ")
+        .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard flattened.count > limit else { return flattened }
+    return String(flattened.prefix(limit - 1)) + "…"
 }
 
 private let isoFractional: ISO8601DateFormatter = {
@@ -519,6 +534,13 @@ private final class BubbleView: NSView {
                     ]))
                 }
             }
+            if let detail = content.detail, !detail.isEmpty {
+                text.append(NSAttributedString(string: "\n" + detail, attributes: [
+                    .font: BubbleView.detailFont,
+                    .foregroundColor: NSColor.white.withAlphaComponent(0.66),
+                    .paragraphStyle: paragraph,
+                ]))
+            }
             return text
         }
         if let prefix = content.prefix, !prefix.isEmpty {
@@ -719,6 +741,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var tokenScanDay = ""
     private var tokenFileStates: [String: TranscriptUsageState] = [:]
     private var tokenFileMtimes: [String: Date] = [:]
+    private var textScanStates: [String: TranscriptTextState] = [:]
     private var balanceLine: String?
     private var lastBalanceRead: Double = 0
     private var balanceFetching = false
@@ -737,6 +760,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var statusTs: Double = 0
     private var transcriptPath: String?
     private var lastThinking = ""
+    private var lastAssistantText = ""
     private var thinkingFloor: Double = 0
     private var contextWindow = 200_000
     private var hovered = false
@@ -1273,10 +1297,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
         let changed = primary.state != currentState
         if switched {
-            if primary.state == currentState {
-                lastThinking = ""
-                thinkingFloor = primary.ts
-            }
+            lastThinking = ""
+            lastAssistantText = ""
+            thinkingFloor = primary.ts
             refreshTitles()
         }
         applyState(primary.state)
@@ -1513,8 +1536,72 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             path: path,
             thinkingAfter: currentState == "thinking" ? thinkingFloor : nil
         )
+        let scanned = scanAssistantText(path: path)
+        if !scanned.isEmpty {
+            lastAssistantText = scanned
+        } else if let text = info.text, !text.isEmpty {
+            lastAssistantText = text
+        }
         if currentState == "thinking", let thinking = info.thinking, !thinking.isEmpty {
             lastThinking = thinking
+        }
+    }
+
+    private func assistantText(_ line: Data.SubSequence) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+              (object["type"] as? String) == "assistant",
+              let message = object["message"] as? [String: Any],
+              let content = message["content"] as? [[String: Any]] else { return nil }
+        for block in content.reversed() where (block["type"] as? String) == "text" {
+            if let value = block["text"] as? String,
+               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    // Finds the newest assistant text once, then follows append-only growth.
+    private func scanAssistantText(path: String) -> String {
+        var state = textScanStates[path] ?? TranscriptTextState()
+        guard let handle = FileHandle(forReadingAtPath: path) else { return state.text }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return state.text }
+
+        if state.offset == 0 || size < state.offset {
+            let window: UInt64 = 16 << 20
+            let start = size > window ? size - window : 0
+            try? handle.seek(toOffset: start)
+            var data = handle.readDataToEndOfFile()
+            if start > 0, let newline = data.firstIndex(of: 0x0A) {
+                data = Data(data[data.index(after: newline)...])
+            }
+            var latest: String?
+            for line in data.split(separator: 0x0A) {
+                if let value = assistantText(line) { latest = value }
+            }
+            if let latest { state.text = latest }
+            state.offset = size
+            textScanStates[path] = state
+            return state.text
+        }
+
+        guard size > state.offset else { return state.text }
+        do {
+            try handle.seek(toOffset: state.offset)
+            let data = handle.readDataToEndOfFile()
+            guard let newline = data.lastIndex(of: 0x0A) else { return state.text }
+            let cut = data.distance(from: data.startIndex, to: newline) + 1
+            state.offset += UInt64(cut)
+            var latest: String?
+            for line in data.prefix(cut).split(separator: 0x0A) {
+                if let value = assistantText(line) { latest = value }
+            }
+            if let latest { state.text = latest }
+            textScanStates[path] = state
+            return state.text
+        } catch {
+            return state.text
         }
     }
 
@@ -1541,10 +1628,20 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 let total = input + created + cached
                 if total > 0 { info.used = total }
             }
-            if info.thinking == nil, let content = message["content"] as? [[String: Any]] {
+            if info.text == nil || info.thinking == nil,
+               let content = message["content"] as? [[String: Any]] {
+                if info.text == nil {
+                    for block in content.reversed() where (block["type"] as? String) == "text" {
+                        if let value = block["text"] as? String,
+                           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            info.text = value
+                            break
+                        }
+                    }
+                }
                 let entryTs = parseTimestamp(object["timestamp"] as? String)
                 let allowed = thinkingAfter == nil || (entryTs ?? 0) >= (thinkingAfter! - 1.0)
-                if allowed {
+                if allowed, info.thinking == nil {
                     for block in content.reversed() where (block["type"] as? String) == "thinking" {
                         if let value = block["thinking"] as? String,
                            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1554,7 +1651,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     }
                 }
             }
-            if info.used != nil && (info.thinking != nil || !wantThinking) { break }
+            if info.used != nil && info.text != nil && (info.thinking != nil || !wantThinking) { break }
         }
         return info
     }
@@ -1563,13 +1660,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         if CACurrentMediaTime() < alertUntil, let alertText {
             return BubbleView.Content(prefix: "⚠", title: alertText, detail: nil, mono: false)
         }
+        let narration = lastAssistantText.isEmpty ? nil : "⏺ " + headSnippet(lastAssistantText, 220)
         if !hovered, sessions.count >= 2 {
             let running = sessions.filter { $0.state != "idle" && $0.state != "done" }
             guard !running.isEmpty else { return nil }
             return BubbleView.Content(
                 prefix: nil,
                 title: "",
-                detail: nil,
+                detail: narration,
                 mono: false,
                 rows: running.map { session in
                     BubbleView.Row(
@@ -1590,7 +1688,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             return BubbleView.Content(
                 prefix: prefix,
                 title: "思考中",
-                detail: lastThinking.isEmpty ? nil : tailSnippet(lastThinking, 200),
+                detail: narration ?? (lastThinking.isEmpty ? nil : tailSnippet(lastThinking, 200)),
                 mono: false
             )
         case "bash", "search", "tool":
@@ -1598,8 +1696,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             return BubbleView.Content(
                 prefix: prefix,
                 title: "正在运行 " + name,
-                detail: statusDetail.isEmpty ? nil : statusDetail,
-                mono: true
+                detail: narration,
+                mono: false
             )
         case "waiting":
             return BubbleView.Content(
@@ -1618,7 +1716,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             )
         case "done":
             guard CACurrentMediaTime() < doneBubbleUntil else { return nil }
-            return BubbleView.Content(prefix: prefix, title: "完成", detail: nil, mono: false)
+            return BubbleView.Content(prefix: prefix, title: "完成", detail: narration, mono: false)
         default:
             return nil
         }
@@ -1905,7 +2003,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             return
         }
         let maxWidth = max(260, min(420, panel.frame.width * 3.2))
-        let maxLines = content.rows.isEmpty ? (hovered ? 5 : 3) : max(content.rows.count, 1)
+        let maxLines: Int
+        if content.rows.isEmpty {
+            maxLines = hovered ? 5 : 3
+        } else {
+            maxLines = content.rows.count + (content.detail == nil ? 0 : 2)
+        }
         var cache = "\(content.prefix ?? "")|\(content.title)|\(content.detail ?? "")|\(Int(maxWidth))|\(maxLines)"
         if !content.rows.isEmpty {
             cache += "|" + content.rows.map { $0.name + $0.state }.joined(separator: ";")
