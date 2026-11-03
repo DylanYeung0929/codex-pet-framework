@@ -179,6 +179,7 @@ private struct Session {
     var detail: String
     var message: String
     var tty: String?
+    var term: String?
 
     var name: String {
         guard !cwd.isEmpty else { return "会话" }
@@ -1221,13 +1222,22 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     @objc private func refreshFrontTTY() {
         guard currentOnly, !frontBusy else { return }
-        frontBusy = true
-        let script = """
+        let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let activeTerms = sessions.filter { $0.tty != nil }.map { $0.term }
+        let useITerm = bundle == "com.googlecode.iterm2"
+            || (bundle != "com.apple.Terminal" && activeTerms.contains { $0?.hasPrefix("iTerm") == true })
+        let script = useITerm ? """
+        tell application "iTerm2"
+        if (count of windows) = 0 then return ""
+        return tty of current session of current window
+        end tell
+        """ : """
         tell application "Terminal"
         if (count of windows) = 0 then return ""
         return tty of selected tab of front window
         end tell
         """
+        frontBusy = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -1251,21 +1261,43 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refreshTitles() {
-        guard !titlesBusy, sessions.contains(where: { $0.tty != nil }) else { return }
+        guard !titlesBusy else { return }
+        let activeTerms = sessions.filter { $0.tty != nil }.map { $0.term }
+        guard !activeTerms.isEmpty else { return }
+        let wantsTerminal = activeTerms.contains { ($0 ?? "Apple_Terminal") == "Apple_Terminal" }
+        let wantsITerm = activeTerms.contains { $0?.hasPrefix("iTerm") == true }
+        guard wantsTerminal || wantsITerm else { return }
         titlesBusy = true
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let script = """
+        var script = "set out to \"\"\n"
+        if wantsTerminal {
+            script += """
             tell application "Terminal"
-            set out to ""
             repeat with w in windows
             repeat with i from 1 to count of tabs of w
             set t to tab i of w
             set out to out & (tty of t) & "~~" & (custom title of t) & linefeed
             end repeat
             end repeat
-            return out
             end tell
+
             """
+        }
+        if wantsITerm {
+            script += """
+            tell application "iTerm2"
+            repeat with w in windows
+            repeat with t in tabs of w
+            repeat with s in sessions of t
+            set out to out & (tty of s) & "~~" & (name of s) & linefeed
+            end repeat
+            end repeat
+            end repeat
+            end tell
+
+            """
+        }
+        script += "return out"
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             process.arguments = ["-e", script]
@@ -1412,11 +1444,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                   let status = try? JSONDecoder().decode(PetStatus.self, from: data) else { continue }
             let id = url.deletingPathExtension().lastPathComponent
             var tty: String?
+            var term: String?
             if let raw = try? String(contentsOf: runDir.appendingPathComponent(id + ".term"), encoding: .utf8) {
                 let raw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 let parts = raw.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
                 let value = parts.count == 2 ? String(parts[1]) : raw
                 if value.hasPrefix("/dev/") { tty = value }
+                if parts.count == 2, !parts[0].isEmpty { term = String(parts[0]) }
             }
             result.append(Session(
                 id: id,
@@ -1428,7 +1462,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 tool: status.tool ?? "",
                 detail: status.detail ?? "",
                 message: status.message ?? "",
-                tty: tty
+                tty: tty,
+                term: term
             ))
         }
         return result.sorted { a, b in

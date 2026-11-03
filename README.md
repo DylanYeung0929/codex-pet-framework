@@ -159,7 +159,7 @@ nohup ~/.claude/pet/bin/CodexPet >/dev/null 2>&1 & disown
 
 - Hook 事件来自 stdin 的 `hook_event_name`；配置里的 `args` 不会转发。
 - Notification 中「Claude is waiting for your input」是回合结束后的空闲提醒，映射为完成；只有权限请求类才映射为等待。
-- 聊天名取自 Terminal 标签的 custom title，每 8 秒刷新；无 tty 信息时回退项目目录名。
+- 聊天名取自 Terminal 标签的 custom title 或 iTerm2 标签名，每 8 秒刷新；无 tty 信息时回退项目目录名。
 
 ## 隐私
 
