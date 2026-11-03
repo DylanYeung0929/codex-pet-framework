@@ -323,6 +323,7 @@ private final class PetView: NSView {
     var onDragStop: (() -> Void)?
     var onDragDirection: ((Int) -> Void)?
     var onClick: (() -> Void)?
+    var onDoubleClick: (() -> Void)?
     var onMenu: ((NSEvent) -> Void)?
     var onHover: ((Bool) -> Void)?
     var onMove: (() -> Void)?
@@ -415,6 +416,8 @@ private final class PetView: NSView {
         if dragged {
             onDragStop?()
             onDragEnd?()
+        } else if event.clickCount >= 2 {
+            onDoubleClick?()
         } else {
             onClick?()
         }
@@ -737,6 +740,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var contextHighSessions = Set<String>()
     private var turnStartBySession: [String: Double] = [:]
     private var lastTurnBySession: [String: Double] = [:]
+    private var turnDurationBySession: [String: Double] = [:]
     private var alertText: String?
     private var alertUntil: Double = 0
     private var lastTokenScan: Double = 0
@@ -930,6 +934,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         petView = PetView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
         petView.locked = lockedPet
         petView.onClick = { [weak self] in self?.focusTerminal() }
+        petView.onDoubleClick = { [weak self] in self?.playNextCheer() }
         petView.onDragEnd = { [weak self] in self?.saveState() }
         petView.onDragStop = { [weak self] in self?.endDragRide() }
         petView.onDragDirection = { [weak self] dir in self?.dragRide(dir) }
@@ -1277,6 +1282,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     @objc private func pollSessions() {
         var loaded = loadSessions()
         trackSessionStates(loaded)
+        trackTurnEvents(loaded)
         if currentOnly, let tty = frontTTY {
             let focused = loaded.filter { $0.tty == tty }
             if !focused.isEmpty { loaded = focused }
@@ -1721,7 +1727,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             )
         case "done":
             guard CACurrentMediaTime() < doneBubbleUntil else { return nil }
-            return BubbleView.Content(prefix: prefix, title: "完成", detail: narration, mono: false)
+            let duration = primaryID.flatMap { turnDurationBySession[$0] }
+            let title = duration.map { "完成 · 用时 " + formatDuration($0) } ?? "完成"
+            return BubbleView.Content(prefix: prefix, title: title, detail: narration, mono: false)
         default:
             return nil
         }
@@ -2818,11 +2826,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             .foregroundColor: NSColor.white.withAlphaComponent(0.97),
             .paragraphStyle: paragraph,
         ])
-        let lines = [
+        var lines = [
             "会话 \(stats.seen.count) · 完成 \(stats.done) · 失败 \(stats.failed)",
             "活跃时长 " + formatDuration(stats.activeSeconds),
             "Token 消耗 " + formatTokens(stats.tokens),
         ]
+        if !stats.history.isEmpty {
+            let recent = Array((stats.history + [PetDayRecord(from: stats)]).suffix(7))
+            lines.append("近 \(recent.count) 天完成 " + sparkline(recent.map { $0.done }))
+        }
         for line in lines {
             text.append(NSAttributedString(string: "\n" + line, attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 11 * fontScale, weight: .regular),
@@ -2847,17 +2859,44 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         return String(format: "%.2fM", Double(value) / 1_000_000)
     }
 
+    private func sparkline(_ values: [Int]) -> String {
+        let blocks: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+        let peak = max(values.max() ?? 0, 1)
+        return String(values.map { value in
+            let index = Int((Double(value) / Double(peak) * Double(blocks.count - 1)).rounded())
+            return blocks[max(0, min(index, blocks.count - 1))]
+        })
+    }
+
     private func loadStats() {
         let key = todayKey()
         if let data = try? Data(contentsOf: statsURL),
-           let saved = try? JSONDecoder().decode(PetStats.self, from: data),
-           saved.day == key {
-            stats = saved
-            statsSeen = Set(saved.seen)
+           let saved = try? JSONDecoder().decode(PetStats.self, from: data) {
+            if saved.day == key {
+                stats = saved
+                statsSeen = Set(saved.seen)
+            } else {
+                stats = PetStats(day: key)
+                stats.history = archiveStats(saved)
+                statsSeen = []
+                statsDirty = true
+            }
         } else {
             stats = PetStats(day: key)
             statsSeen = []
         }
+    }
+
+    private func archiveStats(_ old: PetStats) -> [PetDayRecord] {
+        guard old.done > 0 || old.failed > 0 || old.tokens > 0 || old.activeSeconds > 0 else {
+            return old.history
+        }
+        var history = old.history
+        if !history.contains(where: { $0.day == old.day }) {
+            history.append(PetDayRecord(from: old))
+        }
+        if history.count > 30 { history.removeFirst(history.count - 30) }
+        return history
     }
 
     private func saveStats() {
@@ -2865,6 +2904,24 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         statsDirty = false
         if let data = try? JSONEncoder().encode(stats) {
             try? data.write(to: statsURL, options: .atomic)
+        }
+    }
+
+    private func trackTurnEvents(_ loaded: [Session]) {
+        for session in loaded {
+            guard session.ts > 0 else { continue }
+            switch session.event {
+            case "UserPromptSubmit":
+                turnStartBySession[session.id] = session.ts
+            case "Stop":
+                if let start = turnStartBySession[session.id], session.ts >= start {
+                    turnDurationBySession[session.id] = session.ts - start
+                    lastTurnBySession[session.id] = session.ts
+                    turnStartBySession.removeValue(forKey: session.id)
+                }
+            default:
+                break
+            }
         }
     }
 
@@ -2891,7 +2948,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     @objc private func tickStats() {
         let key = todayKey()
         if stats.day != key {
+            let history = archiveStats(stats)
             stats = PetStats(day: key)
+            stats.history = history
             statsSeen = []
             prevSessionStates = [:]
             statsDirty = true
