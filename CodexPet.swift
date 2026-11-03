@@ -1760,18 +1760,23 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         if !hovered, sessions.count >= 2 {
             let running = sessions.filter { $0.state != "idle" && $0.state != "done" }
             guard !running.isEmpty else { return nil }
+            let capacity = narration == nil ? 3 : 2
+            var rows = running.prefix(capacity).map { session in
+                BubbleView.Row(
+                    name: shortName(displayName(session), limit: 16),
+                    state: stateLabel(session.state),
+                    color: stateColor(session.state)
+                )
+            }
+            if running.count > capacity, !rows.isEmpty {
+                rows[rows.count - 1].state += " · 还有 \(running.count - capacity) 个"
+            }
             return BubbleView.Content(
                 prefix: nil,
                 title: "",
                 detail: narration,
                 mono: false,
-                rows: running.map { session in
-                    BubbleView.Row(
-                        name: shortName(displayName(session), limit: 16),
-                        state: stateLabel(session.state),
-                        color: stateColor(session.state)
-                    )
-                }
+                rows: rows
             )
         }
         let prefix: String? = {
@@ -2108,12 +2113,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             return
         }
         let maxWidth = max(260, min(420, panel.frame.width * 3.2))
-        let maxLines: Int
-        if content.rows.isEmpty {
-            maxLines = hovered ? 5 : 3
-        } else {
-            maxLines = content.rows.count + (content.detail == nil ? 0 : 2)
-        }
+        let maxLines = hovered ? 5 : 3
         var cache = "\(content.prefix ?? "")|\(content.title)|\(content.detail ?? "")|\(Int(maxWidth))|\(maxLines)"
         if !content.rows.isEmpty {
             cache += "|" + content.rows.map { $0.name + $0.state }.joined(separator: ";")
