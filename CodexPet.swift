@@ -14,6 +14,7 @@ private let stateURL = petRoot.appendingPathComponent("window.json")
 private let statsURL = petRoot.appendingPathComponent("stats.json")
 private let runDir = petRoot.appendingPathComponent("run")
 private let configURL = petRoot.appendingPathComponent("config.json")
+private let reviewOffURL = petRoot.appendingPathComponent("review_off.txt")
 
 private struct MotionSpec: Decodable {
     let key: String
@@ -788,6 +789,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var menuSessionIDs: [String] = []
     private var sessionModelsCache: [String] = []
     private var sessionModelsCacheAt: Double = 0
+    private var reviewOffIDs: Set<String> = []
     private var motionMap: [String: String] = [:]
     private var alertDot: AlertDotView!
 
@@ -952,6 +954,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         claimedSingleton = true
         loadState()
+        loadReviewOff()
         _ = loadVolcCredentials()
         refreshArkImageModels(force: true)
         loadConfig()
@@ -3017,6 +3020,24 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func loadReviewOff() {
+        guard let text = try? String(contentsOf: reviewOffURL, encoding: .utf8) else {
+            reviewOffIDs = []
+            return
+        }
+        reviewOffIDs = Set(text.split(separator: "\n").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }.filter { !$0.isEmpty })
+    }
+
+    private func saveReviewOff() {
+        let text = reviewOffIDs.sorted().joined(separator: "\n")
+            + (reviewOffIDs.isEmpty ? "" : "\n")
+        try? text.write(to: reviewOffURL, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: reviewOffURL.path)
+    }
+
     private func showMenu(_ event: NSEvent) {
         let menu = NSMenu()
 
@@ -3126,6 +3147,21 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     modelItem.isEnabled = !session.cwd.isEmpty && session.resumeID != nil
                     sub.addItem(modelItem)
                 }
+                sub.addItem(.separator())
+                let reviewItem = NSMenuItem(
+                    title: "个人审查",
+                    action: #selector(menuToggleSessionReview(_:)),
+                    keyEquivalent: ""
+                )
+                reviewItem.tag = i
+                reviewItem.target = self
+                reviewItem.isEnabled = session.resumeID != nil
+                if let rid = session.resumeID, reviewOffIDs.contains(rid) {
+                    reviewItem.state = .off
+                } else {
+                    reviewItem.state = .on
+                }
+                sub.addItem(reviewItem)
                 item.submenu = sub
                 sessionsMenu.addItem(item)
             }
@@ -3630,6 +3666,19 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         focusTerminal(id: menuSessionIDs[sender.tag])
     }
 
+    @objc private func menuToggleSessionReview(_ sender: NSMenuItem) {
+        guard menuSessionIDs.indices.contains(sender.tag),
+              let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] }),
+              let rid = session.resumeID
+        else { return }
+        if reviewOffIDs.contains(rid) {
+            reviewOffIDs.remove(rid)
+        } else {
+            reviewOffIDs.insert(rid)
+        }
+        saveReviewOff()
+    }
+
     @objc private func menuResumeSession(_ sender: NSMenuItem) {
         guard menuSessionIDs.indices.contains(sender.tag),
               let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] }),
@@ -3641,11 +3690,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
            model.range(of: "^[A-Za-z0-9._:/-]+$", options: .regularExpression) == nil {
             return
         }
-        let command = model.map { "claude --resume \(id) --model \($0)" }
-            ?? "claude --resume \(id)"
+        let noReview = reviewOffIDs.contains(id)
+        let skipFlag = noReview ? " --dangerously-skip-permissions" : ""
+        let command = (model.map { "claude --resume \(id) --model \($0)" }
+            ?? "claude --resume \(id)") + skipFlag
         let alert = NSAlert()
         alert.messageText = "在新终端恢复该会话？"
-        alert.informativeText = "将新开终端窗口运行：\n\(command)\n\n建议先在旧终端退出当前对话，避免两个进程同时写入同一会话记录。"
+        alert.informativeText = "将新开终端窗口运行：\n\(command)\n\n"
+            + (noReview ? "该会话已关闭个人审查，启动后将直接执行，不再逐次确认。\n\n" : "")
+            + "建议先在旧终端退出当前对话，避免两个进程同时写入同一会话记录。"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "继续")
         alert.addButton(withTitle: "取消")
@@ -3654,6 +3707,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let cwd = session.cwd.isEmpty ? NSHomeDirectory() : session.cwd
         var line = "cd " + shellQuote(cwd) + " && claude --resume " + shellQuote(id)
         if let model { line += " --model " + shellQuote(model) }
+        if noReview { line += " --dangerously-skip-permissions" }
         openTerminalWindow(term: session.term ?? "Apple_Terminal", command: line)
     }
 
