@@ -903,7 +903,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.environment["CODEX_PET_VOLC_PROBE"] == "1" {
-            _ = loadVolcCredentials()
+            let hasCreds = loadVolcCredentials()
             var finished = false
             var result: String?
             fetchVolcBalance { line in
@@ -915,7 +915,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
             }
             if finished {
-                FileHandle.standardError.write(Data(((result ?? "VOLC_BALANCE no-credentials") + "\n").utf8))
+                let text = result ?? (hasCreds ? "VOLC_BALANCE failure" : "VOLC_BALANCE no-credentials")
+                FileHandle.standardError.write(Data((text + "\n").utf8))
                 exit(0)
             }
             FileHandle.standardError.write(Data("VOLC_BALANCE timeout\n".utf8))
@@ -2207,7 +2208,6 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     private func loadVolcCredentials() -> Bool {
         if volcCredsLoaded { return volcAK != nil && volcSK != nil }
-        volcCredsLoaded = true
         let path = NSHomeDirectory() + "/.config/ark/env"
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -2224,7 +2224,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if key == "VOLC_ACCESS_KEY_ID" { volcAK = value }
             if key == "VOLC_SECRET_ACCESS_KEY" { volcSK = value }
         }
-        return volcAK != nil && volcSK != nil
+        volcCredsLoaded = volcAK != nil && volcSK != nil
+        return volcCredsLoaded
     }
 
     private static func sha256Hex(_ data: Data) -> String {
@@ -2295,9 +2296,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 let symbol = currency == "CNY"
                     ? "¥"
                     : (currency == "USD" ? "$" : (currency.isEmpty ? "" : currency + " "))
-                line = "火山余额 " + symbol + String(format: "%.2f", value)
+                let sign = value < 0 ? "-" : ""
+                line = "火山余额 " + sign + symbol + String(format: "%.2f", abs(value))
             } else {
-                line = "火山余额 --"
+                line = nil
             }
             DispatchQueue.main.async { completion(line) }
         }.resume()
@@ -2317,8 +2319,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         fetchVolcBalance { [weak self] line in
             guard let self else { return }
             self.volcFetching = false
-            self.volcLine = line
-            let success = line != nil && line != "火山余额 --"
+            self.volcLine = line ?? "火山余额 --"
+            let success = line != nil
             self.volcFailures = success ? 0 : min(self.volcFailures + 1, 4)
             self.volcRetryInterval = success
                 ? 60
