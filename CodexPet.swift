@@ -839,6 +839,16 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var volcFetching = false
     private var volcFailures = 0
     private var volcRetryInterval: Double = 60
+    private var arkImageModels: [(id: String, status: String)] = []
+    private var arkImageModelsAt: Double = 0
+    private var arkImageModelsFetching = false
+    private var arkImageModelsFailures = 0
+    private var arkImageModelsInterval: Double = 300
+    private var lastArkModelsRead: Double = 0
+    private var arkImagePrices: [String: String] = [:]
+    private var arkImagePricesAt: Double = 0
+    private var arkImagePricesFetching = false
+    private var arkImageModel: String?
     private var scale: CGFloat = 0.4
     private var onTop = true
     private var savedCenterX: CGFloat?
@@ -910,6 +920,31 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             FileHandle.standardError.write(Data("VOLC_BALANCE timeout\n".utf8))
             exit(2)
         }
+        if ProcessInfo.processInfo.environment["CODEX_PET_ARK_PROBE"] == "1" {
+            var models: [(id: String, status: String)]?
+            var prices: [String: String] = [:]
+            var pricesDone = false
+            fetchArkImageModels { result in models = result }
+            fetchArkImagePrices { result in
+                prices = result ?? [:]
+                pricesDone = true
+            }
+            let deadline = Date().addingTimeInterval(25)
+            while (models == nil || !pricesDone) && Date() < deadline {
+                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            }
+            if let models {
+                for model in models {
+                    let price = Self.arkPrice(prices: prices, id: model.id)
+                    FileHandle.standardError.write(
+                        Data((model.id + "\t" + model.status + "\t" + price + "\n").utf8)
+                    )
+                }
+                exit(0)
+            }
+            FileHandle.standardError.write(Data("ARK_MODELS no-key-or-failure\n".utf8))
+            exit(2)
+        }
         guard claimSingleton() else {
             exit(0)
         }
@@ -917,6 +952,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         loadState()
         _ = loadVolcCredentials()
         refreshVolcBalance(force: true)
+        refreshArkImageModels(force: true)
         loadConfig()
         loadStats()
         loadMotions()
@@ -2290,6 +2326,241 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func arkEnvValue(_ name: String) -> String? {
+        let path = NSHomeDirectory() + "/.config/ark/env"
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("export ") { line = String(line.dropFirst("export ".count)) }
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let key = String(line[..<eq]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard key == name else { continue }
+            var value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.count >= 2, let first = value.first, let last = value.last,
+               (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                value = String(value.dropFirst().dropLast())
+            }
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    private func fetchArkImageModels(completion: @escaping ([(id: String, status: String)]?) -> Void) {
+        guard let key = arkEnvValue("ARK_API_KEY"),
+              let url = URL(string: "https://ark.cn-beijing.volces.com/api/v3/models") else {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            var result: [(id: String, status: String)]?
+            let statusOK = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+            if statusOK,
+               let data,
+               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let items = root["data"] as? [[String: Any]] {
+                var models: [(id: String, status: String)] = []
+                for item in items {
+                    guard item["domain"] as? String == "ImageGeneration",
+                          let id = item["id"] as? String else { continue }
+                    models.append((id, item["status"] as? String ?? ""))
+                }
+                models.sort {
+                    let leftPublished = $0.status == "Published"
+                    let rightPublished = $1.status == "Published"
+                    if leftPublished != rightPublished { return leftPublished }
+                    return $0.id > $1.id
+                }
+                if !models.isEmpty { result = models }
+            }
+            DispatchQueue.main.async { completion(result) }
+        }.resume()
+    }
+
+    private static func parseArkImagePrices(_ text: String) -> [String: String] {
+        var prices: [String: String] = [:]
+        guard let decimals = try? NSRegularExpression(pattern: "\\d+\\.\\d+") else { return prices }
+        var family: String?
+        var block: [String] = []
+        func flush() {
+            guard let name = family else { return }
+            defer {
+                family = nil
+                block = []
+            }
+            let body = block.joined(separator: "\n")
+            guard !body.isEmpty else { return }
+            if let range = body.range(of: "单图生成场景") {
+                let tail = String(body[range.upperBound...])
+                let nsTail = tail as NSString
+                let matches = decimals.matches(in: tail, range: NSRange(location: 0, length: nsTail.length))
+                let numbers = matches.prefix(2).compactMap { Range($0.range, in: tail).map { String(tail[$0]) } }
+                if numbers.count == 2 {
+                    prices[name] = "¥" + numbers[0] + "–" + numbers[1] + "/张"
+                    return
+                }
+            }
+            let nsBody = body as NSString
+            let matches = decimals.matches(in: body, range: NSRange(location: 0, length: nsBody.length))
+            if let last = matches.last, let range = Range(last.range, in: body) {
+                prices[name] = "¥" + body[range] + "/张"
+            }
+        }
+        for rawLine in text.components(separatedBy: "\n") {
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            line = line.replacingOccurrences(of: "\u{200B}", with: "")
+            if line.hasPrefix("doubao-seedream-") && !line.contains(" ") {
+                flush()
+                family = line
+                continue
+            }
+            guard family != nil else { continue }
+            if line.contains("计费公式") || line == "3D 生成模型" {
+                flush()
+                continue
+            }
+            block.append(line)
+        }
+        flush()
+        return prices
+    }
+
+    private func fetchArkImagePrices(completion: @escaping ([String: String]?) -> Void) {
+        guard let url = URL(string: "https://r.jina.ai/https://www.volcengine.com/docs/82379/1544106") else {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.setValue("text/plain", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            var result: [String: String]?
+            let statusOK = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+            if statusOK, let data, let text = String(data: data, encoding: .utf8) {
+                let parsed = Self.parseArkImagePrices(text)
+                if !parsed.isEmpty { result = parsed }
+            }
+            DispatchQueue.main.async { completion(result) }
+        }.resume()
+    }
+
+    private func refreshArkImageModels(force: Bool = false, notify: Bool = false) {
+        let now = Date().timeIntervalSince1970
+        let interval = force ? 2.0 : arkImageModelsInterval
+        guard now - lastArkModelsRead > interval, !arkImageModelsFetching else { return }
+        lastArkModelsRead = now
+        arkImageModelsFetching = true
+        fetchArkImageModels { [weak self] models in
+            guard let self else { return }
+            self.arkImageModelsFetching = false
+            if let models {
+                self.arkImageModels = models
+                self.arkImageModelsAt = Date().timeIntervalSince1970
+                self.arkImageModelsFailures = 0
+                self.arkImageModelsInterval = 300
+                if notify { self.triggerAlert("生图模型已更新（\(models.count) 个）") }
+            } else {
+                self.arkImageModelsFailures = min(self.arkImageModelsFailures + 1, 4)
+                self.arkImageModelsInterval = min(300 * pow(2, Double(self.arkImageModelsFailures)), 3600)
+                if notify { self.triggerAlert("生图模型刷新失败") }
+            }
+        }
+        if force || now - arkImagePricesAt > 86400 {
+            refreshArkImagePrices(force: true)
+        }
+    }
+
+    private func refreshArkImagePrices(force: Bool = false) {
+        let now = Date().timeIntervalSince1970
+        guard !arkImagePricesFetching, force || now - arkImagePricesAt > 86400 else { return }
+        arkImagePricesFetching = true
+        fetchArkImagePrices { [weak self] prices in
+            guard let self else { return }
+            self.arkImagePricesFetching = false
+            if let prices {
+                self.arkImagePrices = prices
+                self.arkImagePricesAt = Date().timeIntervalSince1970
+            }
+        }
+    }
+
+    private static func arkPriceFamily(_ id: String) -> String {
+        if let range = id.range(of: "-\\d{6,8}$", options: .regularExpression) {
+            return String(id[..<range.lowerBound])
+        }
+        return id
+    }
+
+    private static func arkPrice(prices: [String: String], id: String) -> String {
+        let family = arkPriceFamily(id)
+        if let price = prices[family] { return price }
+        if family == "doubao-seedream-5-0", let price = prices["doubao-seedream-5-0-lite"] {
+            return price
+        }
+        return "价格以官网为准"
+    }
+
+    private func selectArkImageModel(_ id: String) {
+        let path = NSHomeDirectory() + "/.config/ark/env"
+        guard var text = try? String(contentsOfFile: path, encoding: .utf8) else {
+            triggerAlert("未找到 ~/.config/ark/env")
+            return
+        }
+        let manager = FileManager.default
+        let permissions = (try? manager.attributesOfItem(atPath: path))?[.posixPermissions] as? NSNumber
+        var lines = text.components(separatedBy: "\n")
+        var replaced = false
+        for (index, rawLine) in lines.enumerated() {
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasExport = line.hasPrefix("export ")
+            if hasExport { line = String(line.dropFirst("export ".count)) }
+            guard let eq = line.firstIndex(of: "="),
+                  String(line[..<eq]).trimmingCharacters(in: .whitespacesAndNewlines) == "ARK_IMAGE_MODEL"
+            else { continue }
+            lines[index] = (hasExport ? "export " : "") + "ARK_IMAGE_MODEL=\"" + id + "\""
+            replaced = true
+            break
+        }
+        if !replaced {
+            if lines.last?.isEmpty == false { lines.append("") }
+            lines.append("ARK_IMAGE_MODEL=\"" + id + "\"")
+        }
+        text = lines.joined(separator: "\n")
+        do {
+            try text.write(toFile: path, atomically: true, encoding: .utf8)
+            try? manager.setAttributes(
+                [.posixPermissions: permissions ?? NSNumber(value: 0o600)],
+                ofItemAtPath: path
+            )
+            arkImageModel = id
+            triggerAlert("生图模型：\(id)")
+        } catch {
+            triggerAlert("写入 ARK_IMAGE_MODEL 失败")
+        }
+    }
+
+    private func clockString(_ timestamp: Double) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: Date(timeIntervalSince1970: timestamp))
+    }
+
+    @objc private func menuSelectArkImageModel(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              id.range(of: "^[A-Za-z0-9._:-]+$", options: .regularExpression) != nil
+        else { return }
+        selectArkImageModel(id)
+    }
+
+    @objc private func menuRefreshArkImageModels() {
+        triggerAlert("正在刷新模型与价格…")
+        refreshArkImageModels(force: true, notify: true)
+    }
+
     private func triggerAlert(_ message: String, sound: String = "", repeats: Int = 1) {
         alertText = message
         alertUntil = CACurrentMediaTime() + 8
@@ -2848,6 +3119,51 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         sessionsItem.submenu = sessionsMenu
         menu.addItem(sessionsItem)
+
+        let arkItem = NSMenuItem(title: "生图模型", action: nil, keyEquivalent: "")
+        let arkMenu = NSMenu()
+        refreshArkImageModels()
+        let selectedModel = arkEnvValue("ARK_IMAGE_MODEL")
+        arkImageModel = selectedModel
+        if arkImageModels.isEmpty {
+            let status = NSMenuItem(
+                title: arkImageModelsFailures > 0 ? "获取失败，稍后自动重试" : "正在获取…",
+                action: nil,
+                keyEquivalent: ""
+            )
+            status.isEnabled = false
+            arkMenu.addItem(status)
+        }
+        for model in arkImageModels {
+            let price = Self.arkPrice(prices: arkImagePrices, id: model.id)
+            let suffix = model.status == "Retiring" ? "（下线中）" : ""
+            let item = NSMenuItem(
+                title: model.id + " · " + price + suffix,
+                action: #selector(menuSelectArkImageModel(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = model.id
+            item.target = self
+            if model.id == selectedModel { item.state = .on }
+            arkMenu.addItem(item)
+        }
+        arkMenu.addItem(.separator())
+        let stampItem = NSMenuItem(
+            title: arkImageModelsAt > 0 ? "模型更新于 " + clockString(arkImageModelsAt) : "尚未获取模型列表",
+            action: nil,
+            keyEquivalent: ""
+        )
+        stampItem.isEnabled = false
+        arkMenu.addItem(stampItem)
+        let refreshArk = NSMenuItem(
+            title: "刷新模型与价格",
+            action: #selector(menuRefreshArkImageModels),
+            keyEquivalent: ""
+        )
+        refreshArk.target = self
+        arkMenu.addItem(refreshArk)
+        arkItem.submenu = arkMenu
+        menu.addItem(arkItem)
 
         let sizeItem = NSMenuItem(title: "大小", action: nil, keyEquivalent: "")
         let sizeMenu = NSMenu()
@@ -3641,6 +3957,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         refreshBalance()
         refreshVolcBalance()
+        refreshArkImageModels()
         refreshTodayTokens()
         if statsDirty {
             saveStats()
