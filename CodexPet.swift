@@ -953,12 +953,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         claimedSingleton = true
         loadState()
         _ = loadVolcCredentials()
-        refreshVolcBalance(force: true)
         refreshArkImageModels(force: true)
         loadConfig()
         loadStats()
         loadMotions()
         makePanel()
+        refreshVolcBalance(force: true)
         applyHotKeySetting()
         NotificationCenter.default.addObserver(
             self,
@@ -2229,7 +2229,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private static func sha256Hex(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        hexString(Data(SHA256.hash(data: data)))
     }
 
     private static func hmacSHA256(_ key: Data, _ message: String) -> Data {
