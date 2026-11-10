@@ -1345,9 +1345,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.frontBusy = false
-                if !text.isEmpty, text.hasPrefix("/dev/") {
-                    self.frontTTY = text
-                }
+                self.frontTTY = text.hasPrefix("/dev/") ? text : ""
             }
         }
     }
@@ -1662,7 +1660,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             try handle.seek(toOffset: state.offset)
             let chunk = try handle.read(upToCount: Int(min(size - state.offset, UInt64(8 << 20)))) ?? Data()
             guard let lastNewline = chunk.lastIndex(of: 0x0A) else {
-                state.offset += UInt64(chunk.count)
+                // Keep a trailing partial line for the next scan; only skip
+                // it when the read cap was hit, or the offset would stall.
+                if chunk.count >= 8 << 20 { state.offset += UInt64(chunk.count) }
                 return
             }
             let cut = chunk.distance(from: chunk.startIndex, to: lastNewline) + 1

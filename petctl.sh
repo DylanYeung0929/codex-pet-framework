@@ -57,7 +57,7 @@ status() {
   if pid="$(running_pid)"; then
     local count=0
     for f in "$RUN_DIR"/*.json(N); do
-      [[ "${f:t}" == "pet.json" ]] || (( count++ ))
+      count=$((count + 1))
     done
     say "运行中（pid $pid）· 会话 $count"
   else
