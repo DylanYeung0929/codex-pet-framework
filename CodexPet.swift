@@ -848,6 +848,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var arkImagePrices: [String: String] = [:]
     private var arkImagePricesAt: Double = 0
     private var arkImagePricesFetching = false
+    private var lastArkPricesRead: Double = 0
     private var arkImageModel: String?
     private var scale: CGFloat = 0.4
     private var onTop = true
@@ -2434,7 +2435,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             return
         }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 20
+        request.timeoutInterval = 30
         request.setValue("text/plain", forHTTPHeaderField: "Accept")
         URLSession.shared.dataTask(with: request) { data, response, _ in
             var result: [String: String]?
@@ -2475,7 +2476,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     private func refreshArkImagePrices(force: Bool = false) {
         let now = Date().timeIntervalSince1970
-        guard !arkImagePricesFetching, force || now - arkImagePricesAt > 86400 else { return }
+        let interval = force ? 2.0 : 300.0
+        guard !arkImagePricesFetching,
+              now - lastArkPricesRead > interval,
+              force || now - arkImagePricesAt > 86400
+        else { return }
+        lastArkPricesRead = now
         arkImagePricesFetching = true
         fetchArkImagePrices { [weak self] prices in
             guard let self else { return }
@@ -2559,6 +2565,11 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     @objc private func menuRefreshArkImageModels() {
         triggerAlert("正在刷新模型与价格…")
         refreshArkImageModels(force: true, notify: true)
+    }
+
+    @objc private func menuOpenArkPricing() {
+        guard let url = URL(string: "https://www.volcengine.com/docs/82379/1544106") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func triggerAlert(_ message: String, sound: String = "", repeats: Int = 1) {
@@ -3123,6 +3134,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let arkItem = NSMenuItem(title: "生图模型", action: nil, keyEquivalent: "")
         let arkMenu = NSMenu()
         refreshArkImageModels()
+        refreshArkImagePrices()
         let selectedModel = arkEnvValue("ARK_IMAGE_MODEL")
         arkImageModel = selectedModel
         if arkImageModels.isEmpty {
@@ -3162,6 +3174,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         )
         refreshArk.target = self
         arkMenu.addItem(refreshArk)
+        let pricingItem = NSMenuItem(
+            title: "查看官方定价 ↗",
+            action: #selector(menuOpenArkPricing),
+            keyEquivalent: ""
+        )
+        pricingItem.target = self
+        arkMenu.addItem(pricingItem)
         arkItem.submenu = arkMenu
         menu.addItem(arkItem)
 
