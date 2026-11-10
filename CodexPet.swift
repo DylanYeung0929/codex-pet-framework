@@ -3124,6 +3124,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 item.tag = i
                 if session.id == primaryID { item.state = .on }
                 let sub = NSMenu()
+                let contextItem = NSMenuItem(
+                    title: sessionContextLabel(session),
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                contextItem.isEnabled = false
+                sub.addItem(contextItem)
+                sub.addItem(.separator())
                 let focus = NSMenuItem(
                     title: "聚焦终端",
                     action: #selector(menuFocusSession(_:)),
@@ -3467,6 +3475,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         NSMenu.popUpContextMenu(menu, with: event, for: petView)
+    }
+
+    private func sessionContextLabel(_ session: Session) -> String {
+        guard let used = usageBySession[session.id], used > 0 else { return "上下文 --" }
+        let percent = Int((Double(used) / Double(max(contextWindow, 1)) * 100).rounded())
+        return "上下文 \(percent)% · \(formatTokens(used)) / \(formatTokens(contextWindow))"
     }
 
     @objc private func menuIdle() {
