@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Carbon.HIToolbox
+import CryptoKit
 import Darwin
 import Foundation
 import ImageIO
@@ -826,6 +827,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var balanceFetching = false
     private var balanceFailures = 0
     private var balanceRetryInterval: Double = 60
+    private var volcAK: String?
+    private var volcSK: String?
+    private var volcCredsLoaded = false
+    private var volcLine: String?
+    private var lastVolcRead: Double = 0
+    private var volcFetching = false
+    private var volcFailures = 0
+    private var volcRetryInterval: Double = 60
     private var scale: CGFloat = 0.4
     private var onTop = true
     private var savedCenterX: CGFloat?
@@ -878,11 +887,32 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var hotKeyHandler: EventHandlerRef?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if ProcessInfo.processInfo.environment["CODEX_PET_VOLC_PROBE"] == "1" {
+            _ = loadVolcCredentials()
+            var finished = false
+            var result: String?
+            fetchVolcBalance { line in
+                result = line
+                finished = true
+            }
+            let deadline = Date().addingTimeInterval(12)
+            while !finished && Date() < deadline {
+                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            }
+            if finished {
+                FileHandle.standardError.write(Data(((result ?? "VOLC_BALANCE no-credentials") + "\n").utf8))
+                exit(0)
+            }
+            FileHandle.standardError.write(Data("VOLC_BALANCE timeout\n".utf8))
+            exit(2)
+        }
         guard claimSingleton() else {
             exit(0)
         }
         claimedSingleton = true
         loadState()
+        _ = loadVolcCredentials()
+        refreshVolcBalance(force: true)
         loadConfig()
         loadStats()
         loadMotions()
@@ -1917,15 +1947,26 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
 
         func appendBalance() {
-            guard let balance = balanceLine else { return }
-            if text.length > 0 {
-                text.append(NSAttributedString(string: "\n", attributes: [.font: subFont]))
+            if let balance = balanceLine {
+                if text.length > 0 {
+                    text.append(NSAttributedString(string: "\n", attributes: [.font: subFont]))
+                }
+                text.append(NSAttributedString(string: balance + " · 今日 " + formatTokens(stats.tokens) + " tokens", attributes: [
+                    .font: subFont,
+                    .foregroundColor: NSColor.white.withAlphaComponent(0.65),
+                    .paragraphStyle: paragraph,
+                ]))
             }
-            text.append(NSAttributedString(string: balance + " · 今日 " + formatTokens(stats.tokens) + " tokens", attributes: [
-                .font: subFont,
-                .foregroundColor: NSColor.white.withAlphaComponent(0.65),
-                .paragraphStyle: paragraph,
-            ]))
+            if let volc = volcLine {
+                if text.length > 0 {
+                    text.append(NSAttributedString(string: "\n", attributes: [.font: subFont]))
+                }
+                text.append(NSAttributedString(string: volc, attributes: [
+                    .font: subFont,
+                    .foregroundColor: NSColor.white.withAlphaComponent(0.65),
+                    .paragraphStyle: paragraph,
+                ]))
+            }
         }
 
         if sessions.count == 1, let session = sessions.first {
@@ -2009,7 +2050,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
 
         appendBalance()
-        key += "|\(balanceLine ?? "")|\(stats.tokens)"
+        key += "|\(balanceLine ?? "")|\(volcLine ?? "")|\(stats.tokens)"
         return (text, key, minWidth)
     }
 
@@ -2115,6 +2156,128 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         } else {
             let percent = newlyHigh.map { $0.percent }.max() ?? Int((contextAlertThreshold * 100).rounded())
             triggerAlert("\(newlyHigh.count) 个会话上下文已达 \(percent)% 以上，建议 /compact")
+        }
+    }
+
+    private func loadVolcCredentials() -> Bool {
+        if volcCredsLoaded { return volcAK != nil && volcSK != nil }
+        volcCredsLoaded = true
+        let path = NSHomeDirectory() + "/.config/ark/env"
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("export ") { line = String(line.dropFirst("export ".count)) }
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let key = String(line[..<eq]).trimmingCharacters(in: .whitespacesAndNewlines)
+            var value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.count >= 2, let first = value.first, let last = value.last,
+               (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                value = String(value.dropFirst().dropLast())
+            }
+            guard !value.isEmpty else { continue }
+            if key == "VOLC_ACCESS_KEY_ID" { volcAK = value }
+            if key == "VOLC_SECRET_ACCESS_KEY" { volcSK = value }
+        }
+        return volcAK != nil && volcSK != nil
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func hmacSHA256(_ key: Data, _ message: String) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: SymmetricKey(data: key)))
+    }
+
+    private static func hexString(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func volcBalanceRequest(ak: String, sk: String) -> URLRequest? {
+        let host = "billing.volcengineapi.com"
+        let query = "Action=QueryBalanceAcct&Version=2022-01-01"
+        guard let url = URL(string: "https://" + host + "/?" + query) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        let xDate = formatter.string(from: Date())
+        let shortDate = String(xDate.prefix(8))
+        let payloadHash = Self.sha256Hex(Data())
+        let canonical = "GET\n/\n" + query + "\n"
+            + "host:" + host + "\n"
+            + "x-content-sha256:" + payloadHash + "\n"
+            + "x-date:" + xDate + "\n\n"
+            + "host;x-content-sha256;x-date\n"
+            + payloadHash
+        let scope = shortDate + "/cn-north-1/billing/request"
+        let sts = "HMAC-SHA256\n" + xDate + "\n" + scope + "\n" + Self.sha256Hex(Data(canonical.utf8))
+        let kDate = Self.hmacSHA256(Data(sk.utf8), shortDate)
+        let kRegion = Self.hmacSHA256(kDate, "cn-north-1")
+        let kService = Self.hmacSHA256(kRegion, "billing")
+        let kSign = Self.hmacSHA256(kService, "request")
+        let signature = Self.hexString(Self.hmacSHA256(kSign, sts))
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        request.setValue(host, forHTTPHeaderField: "Host")
+        request.setValue(xDate, forHTTPHeaderField: "X-Date")
+        request.setValue(payloadHash, forHTTPHeaderField: "X-Content-Sha256")
+        request.setValue(
+            "HMAC-SHA256 Credential=" + ak + "/" + scope
+                + ", SignedHeaders=host;x-content-sha256;x-date, Signature=" + signature,
+            forHTTPHeaderField: "Authorization"
+        )
+        return request
+    }
+
+    private func fetchVolcBalance(completion: @escaping (String?) -> Void) {
+        guard let ak = volcAK, let sk = volcSK, let request = volcBalanceRequest(ak: ak, sk: sk) else {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            var line: String?
+            let statusOK = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+            if statusOK,
+               let data,
+               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let result = root["Result"] as? [String: Any],
+               let balance = result["AvailableBalance"] as? String,
+               let value = Double(balance) {
+                let currency = result["Currency"] as? String ?? ""
+                let symbol = currency == "CNY"
+                    ? "¥"
+                    : (currency == "USD" ? "$" : (currency.isEmpty ? "" : currency + " "))
+                line = "火山余额 " + symbol + String(format: "%.2f", value)
+            } else {
+                line = "火山余额 --"
+            }
+            DispatchQueue.main.async { completion(line) }
+        }.resume()
+    }
+
+    private func refreshVolcBalance(force: Bool = false) {
+        let now = CACurrentMediaTime()
+        let interval = force ? 2.0 : volcRetryInterval
+        guard now - lastVolcRead > interval, !volcFetching else { return }
+        lastVolcRead = now
+        guard loadVolcCredentials() else {
+            volcLine = nil
+            updateBadge()
+            return
+        }
+        volcFetching = true
+        fetchVolcBalance { [weak self] line in
+            guard let self else { return }
+            self.volcFetching = false
+            self.volcLine = line
+            let success = line != nil && line != "火山余额 --"
+            self.volcFailures = success ? 0 : min(self.volcFailures + 1, 4)
+            self.volcRetryInterval = success
+                ? 60
+                : min(60 * pow(2, Double(self.volcFailures)), 600)
+            self.updateBadge()
         }
     }
 
@@ -2225,6 +2388,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             lastUsageRead = 0
             refreshUsages()
             refreshBalance(force: true)
+            refreshVolcBalance(force: true)
         }
         updateBubble()
         updateBadge()
@@ -3324,6 +3488,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             refreshUsages()
         }
         refreshBalance()
+        refreshVolcBalance()
         refreshTodayTokens()
         if statsDirty {
             saveStats()
