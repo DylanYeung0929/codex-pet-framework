@@ -1315,9 +1315,17 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     @objc private func refreshFrontTTY() {
         guard currentOnly, !frontBusy else { return }
         let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let activeTerms = sessions.filter { $0.tty != nil }.map { $0.term }
-        let useITerm = bundle == "com.googlecode.iterm2"
-            || (bundle != "com.apple.Terminal" && activeTerms.contains { $0?.hasPrefix("iTerm") == true })
+        let termHint: String?
+        if bundle == "com.apple.Terminal" {
+            termHint = "Apple_Terminal"
+        } else if bundle == "com.googlecode.iterm2" {
+            termHint = "iTerm.app"
+        } else {
+            // In another app, follow the most recently active session's
+            // terminal instead of always preferring iTerm2.
+            termHint = sessions.max { $0.ts < $1.ts }?.term
+        }
+        let useITerm = termHint?.hasPrefix("iTerm") == true
         let script = useITerm ? """
         tell application "iTerm2"
         if (count of windows) = 0 then return ""
