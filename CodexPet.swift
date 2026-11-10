@@ -161,6 +161,7 @@ private struct PetStatus: Decodable {
     var event: String?
     var ts: Double?
     var turnStart: Double?
+    var sessionId: String?
     var transcript: String?
     var cwd: String?
     var tool: String?
@@ -183,6 +184,7 @@ private struct Session {
     var tty: String?
     var term: String?
     var turnStart: Double?
+    var resumeID: String?
 
     var name: String {
         guard !cwd.isEmpty else { return "会话" }
@@ -784,6 +786,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var prevSessionStates: [String: String] = [:]
     private var statsDirty = false
     private var menuSessionIDs: [String] = []
+    private var sessionModelsCache: [String] = []
+    private var sessionModelsCacheAt: Double = 0
     private var motionMap: [String: String] = [:]
     private var alertDot: AlertDotView!
 
@@ -1499,6 +1503,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 if value.hasPrefix("/dev/") { tty = value }
                 if parts.count == 2, !parts[0].isEmpty { term = String(parts[0]) }
             }
+            let transcriptID = status.transcript.map {
+                (($0 as NSString).lastPathComponent as NSString).deletingPathExtension
+            }
+            let resumeID = status.sessionId ?? transcriptID
             result.append(Session(
                 id: id,
                 state: status.state,
@@ -1511,7 +1519,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 message: status.message ?? "",
                 tty: tty,
                 term: term,
-                turnStart: status.turnStart
+                turnStart: status.turnStart,
+                resumeID: resumeID
             ))
         }
         return result.sorted { a, b in
@@ -2792,16 +2801,48 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             emptyItem.isEnabled = false
             sessionsMenu.addItem(emptyItem)
         } else {
+            let recentModels = collectRecentModels()
             for (i, session) in sessions.enumerated() {
                 let item = NSMenuItem(
                     title: displayName(session) + " · " + stateLabel(session.state),
-                    action: #selector(menuFocusSession(_:)),
+                    action: nil,
                     keyEquivalent: ""
                 )
                 item.tag = i
-                item.target = self
-                item.isEnabled = session.tty != nil
                 if session.id == primaryID { item.state = .on }
+                let sub = NSMenu()
+                let focus = NSMenuItem(
+                    title: "聚焦终端",
+                    action: #selector(menuFocusSession(_:)),
+                    keyEquivalent: ""
+                )
+                focus.tag = i
+                focus.target = self
+                focus.isEnabled = session.tty != nil
+                sub.addItem(focus)
+                sub.addItem(.separator())
+                let resume = NSMenuItem(
+                    title: "默认模型",
+                    action: #selector(menuResumeSession(_:)),
+                    keyEquivalent: ""
+                )
+                resume.tag = i
+                resume.target = self
+                resume.isEnabled = !session.cwd.isEmpty && session.resumeID != nil
+                sub.addItem(resume)
+                for model in recentModels {
+                    let modelItem = NSMenuItem(
+                        title: model,
+                        action: #selector(menuResumeSession(_:)),
+                        keyEquivalent: ""
+                    )
+                    modelItem.tag = i
+                    modelItem.representedObject = model
+                    modelItem.target = self
+                    modelItem.isEnabled = !session.cwd.isEmpty && session.resumeID != nil
+                    sub.addItem(modelItem)
+                }
+                item.submenu = sub
                 sessionsMenu.addItem(item)
             }
         }
@@ -3250,6 +3291,117 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     @objc private func menuFocusSession(_ sender: NSMenuItem) {
         guard menuSessionIDs.indices.contains(sender.tag) else { return }
         focusTerminal(id: menuSessionIDs[sender.tag])
+    }
+
+    @objc private func menuResumeSession(_ sender: NSMenuItem) {
+        guard menuSessionIDs.indices.contains(sender.tag),
+              let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] }),
+              let id = session.resumeID
+        else { return }
+        guard id.range(of: "^[A-Za-z0-9-]+$", options: .regularExpression) != nil else { return }
+        let model = sender.representedObject as? String
+        if let model,
+           model.range(of: "^[A-Za-z0-9._:/-]+$", options: .regularExpression) == nil {
+            return
+        }
+        let command = model.map { "claude --resume \(id) --model \($0)" }
+            ?? "claude --resume \(id)"
+        let alert = NSAlert()
+        alert.messageText = "在新终端恢复该会话？"
+        alert.informativeText = "将新开终端窗口运行：\n\(command)\n\n建议先在旧终端退出当前对话，避免两个进程同时写入同一会话记录。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "继续")
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let cwd = session.cwd.isEmpty ? NSHomeDirectory() : session.cwd
+        var line = "cd " + shellQuote(cwd) + " && claude --resume " + shellQuote(id)
+        if let model { line += " --model " + shellQuote(model) }
+        openTerminalWindow(term: session.term ?? "Apple_Terminal", command: line)
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func openTerminalWindow(term: String, command: String) {
+        let escaped = command
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script: String
+        if term == "iTerm.app" {
+            script = """
+            tell application "iTerm2"
+                activate
+                create window with default profile command "\(escaped)"
+            end tell
+            """
+        } else {
+            script = """
+            tell application "Terminal"
+                activate
+                set targetWindow to make new window
+                do script "\(escaped)" in targetWindow
+            end tell
+            """
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        try? process.run()
+    }
+
+    private func collectRecentModels() -> [String] {
+        let now = Date().timeIntervalSince1970
+        if now - sessionModelsCacheAt < 60 { return sessionModelsCache }
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects")
+        var files: [(URL, Double)] = []
+        if let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) {
+            for case let url as URL in enumerator {
+                guard url.pathExtension == "jsonl" else { continue }
+                let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate?.timeIntervalSince1970 ?? 0
+                guard now - modified < 14 * 86400 else { continue }
+                files.append((url, modified))
+            }
+        }
+        files.sort { $0.1 > $1.1 }
+        guard let pattern = try? NSRegularExpression(pattern: "\"model\"\\s*:\\s*\"([^\"]+)\"") else {
+            return sessionModelsCache
+        }
+        var models: [String] = []
+        func absorb(_ text: String, reversed: Bool) -> Bool {
+            guard !text.isEmpty else { return false }
+            let ns = text as NSString
+            let matches = pattern.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            for match in (reversed ? matches.reversed() : matches) {
+                guard let range = Range(match.range(at: 1), in: text) else { continue }
+                let model = String(text[range])
+                if model.isEmpty || model == "<synthetic>" || models.contains(model) { continue }
+                models.append(model)
+                if models.count >= 8 { return true }
+            }
+            return false
+        }
+        for (url, _) in files.prefix(40) {
+            if absorb(readTail(url, bytes: 96 * 1024), reversed: true) { break }
+            if absorb(readHead(url, bytes: 96 * 1024), reversed: false) { break }
+        }
+        sessionModelsCache = models
+        sessionModelsCacheAt = now
+        return models
+    }
+
+    private func readHead(_ url: URL, bytes: Int) -> String {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
+        defer { try? handle.close() }
+        let data = (try? handle.read(upToCount: bytes)) ?? Data()
+        return String(decoding: data, as: UTF8.self)
     }
 
     @objc private func menuStats() {
