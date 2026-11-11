@@ -3182,6 +3182,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 try? fm.removeItem(at: url)
                 try? fm.removeItem(at: runDir.appendingPathComponent(id + ".json"))
                 try? fm.removeItem(at: runDir.appendingPathComponent(id + ".term"))
+                try? fm.removeItem(at: runDir.appendingPathComponent(id + ".restartable"))
             }
         }
 
@@ -3193,6 +3194,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if let mtime, Date().timeIntervalSince(mtime) > 7200 {
                 try? fm.removeItem(at: url)
                 try? fm.removeItem(at: runDir.appendingPathComponent(id + ".term"))
+                try? fm.removeItem(at: runDir.appendingPathComponent(id + ".restartable"))
             } else {
                 live += 1
             }
@@ -4463,6 +4465,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func canAutoRestart(_ petID: String) -> Bool {
+        FileManager.default.fileExists(
+            atPath: runDir.appendingPathComponent(petID + ".restartable").path
+        )
+    }
+
     @discardableResult
     private func restartSession(
         _ session: Session,
@@ -4474,6 +4482,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         guard let rid = session.resumeID,
               rid.range(of: "^[A-Za-z0-9-]+$", options: .regularExpression) != nil else {
             showNotice("无法自动重启", "该会话缺少有效的恢复 UUID，请手动恢复。")
+            return false
+        }
+        guard canAutoRestart(session.id) else {
+            showNotice(
+                "无法自动重启",
+                "该会话由旧版包装函数启动，重启后不能自动恢复。请新开一个终端会话后再试；"
+                    + "个人审查的更改仍会在下次恢复该会话时生效。"
+            )
             return false
         }
         guard let proc = claudeProcess(forPetID: session.id) else {

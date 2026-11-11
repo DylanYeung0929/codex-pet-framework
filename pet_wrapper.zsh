@@ -23,6 +23,7 @@ claude() {
     mkdir -p "$pet_root/run"
     print -r -- $$ > "$pet_root/run/$pet_id.pid"
     print -r -- "${TERM_PROGRAM:-Apple_Terminal}|${TTY:-}" > "$pet_root/run/$pet_id.term"
+    print -r -- 1 > "$pet_root/run/$pet_id.restartable"
     "$pet" >/dev/null 2>&1 &!
   fi
   local rc=0
@@ -54,7 +55,7 @@ claude() {
       return $rc
     )
     rc=$?
-    rm -f "$pet_root/run/$pet_id.json" "$pet_root/run/$pet_id.pid" "$pet_root/run/$pet_id.term"
+    rm -f "$pet_root/run/$pet_id.json" "$pet_root/run/$pet_id.pid" "$pet_root/run/$pet_id.term" "$pet_root/run/$pet_id.restartable"
   else
     command claude "$@"
     rc=$?
