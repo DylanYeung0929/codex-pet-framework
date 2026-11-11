@@ -798,6 +798,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var sessionModelsCache: [String] = []
     private var sessionModelsCacheAt: Double = 0
     private var sessionModelsRefreshing = false
+    private var providerModels: [String] = []
+    private var providerModelsCacheAt: Double = 0
+    private var providerModelsRefreshing = false
     private var reviewOffIDs: Set<String> = []
     private var motionMap: [String: String] = [:]
     private var alertDot: AlertDotView!
@@ -973,6 +976,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         makePanel()
         refreshVolcBalance(force: true)
         prefetchRecentModels()
+        prefetchProviderModels()
         applyHotKeySetting()
         NotificationCenter.default.addObserver(
             self,
@@ -2169,7 +2173,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         return (text, key, minWidth)
     }
 
-    private func apiCredentials() -> (token: String, host: String)? {
+    private func apiCredentials() -> (token: String, host: String, base: URL)? {
         var token = ProcessInfo.processInfo.environment["ANTHROPIC_AUTH_TOKEN"] ?? ""
         var base = ProcessInfo.processInfo.environment["ANTHROPIC_BASE_URL"] ?? ""
         let settings = URL(fileURLWithPath: NSHomeDirectory() + "/.claude/settings.json")
@@ -2180,7 +2184,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if let value = env["ANTHROPIC_BASE_URL"] as? String, !value.isEmpty { base = value }
         }
         guard !token.isEmpty, let url = URL(string: base), let host = url.host else { return nil }
-        return (token, host)
+        return (token, host, url)
     }
 
     private func refreshBalance(force: Bool = false) {
@@ -3226,7 +3230,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 resume.target = self
                 resume.isEnabled = !session.cwd.isEmpty && session.resumeID != nil
                 sub.addItem(resume)
-                for model in recentModels {
+                func addResumeModel(_ model: String) {
                     let modelItem = NSMenuItem(
                         title: model,
                         action: #selector(menuResumeSession(_:)),
@@ -3237,6 +3241,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     modelItem.target = self
                     modelItem.isEnabled = !session.cwd.isEmpty && session.resumeID != nil
                     sub.addItem(modelItem)
+                }
+                recentModels.forEach(addResumeModel)
+                let officialModels = providerModels.filter { !recentModels.contains($0) }
+                if !officialModels.isEmpty {
+                    sub.addItem(.separator())
+                    let officialHeader = NSMenuItem(title: "官方模型", action: nil, keyEquivalent: "")
+                    officialHeader.isEnabled = false
+                    sub.addItem(officialHeader)
+                    officialModels.forEach(addResumeModel)
                 }
                 sub.addItem(.separator())
                 let reviewItem = NSMenuItem(
@@ -3852,7 +3865,55 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     private func collectRecentModels() -> [String] {
         prefetchRecentModels()
+        prefetchProviderModels()
         return sessionModelsCache
+    }
+
+    private func prefetchProviderModels() {
+        let now = Date().timeIntervalSince1970
+        guard !providerModelsRefreshing, now - providerModelsCacheAt >= 600 else { return }
+        guard let cred = apiCredentials() else {
+            providerModelsCacheAt = now
+            return
+        }
+        var components = URLComponents(url: cred.base, resolvingAgainstBaseURL: false)
+        components?.path = "/v1/models"
+        components?.query = nil
+        guard let url = components?.url else {
+            providerModelsCacheAt = now
+            return
+        }
+        providerModelsRefreshing = true
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        if cred.host.contains("anthropic") {
+            request.setValue(cred.token, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        } else {
+            request.setValue("Bearer " + cred.token, forHTTPHeaderField: "Authorization")
+        }
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            var models: [String] = []
+            let statusOK = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+            if statusOK, let data,
+               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let items = root["data"] as? [[String: Any]] {
+                for item in items {
+                    guard let id = item["id"] as? String,
+                          !id.isEmpty,
+                          id.range(of: "^[A-Za-z0-9._:/-]+$", options: .regularExpression) != nil,
+                          !models.contains(id)
+                    else { continue }
+                    models.append(id)
+                }
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.providerModelsRefreshing = false
+                self.providerModelsCacheAt = Date().timeIntervalSince1970
+                if !models.isEmpty { self.providerModels = models }
+            }
+        }.resume()
     }
 
     private func prefetchRecentModels() {
