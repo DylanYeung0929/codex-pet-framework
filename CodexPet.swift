@@ -15,6 +15,8 @@ private let statsURL = petRoot.appendingPathComponent("stats.json")
 private let runDir = petRoot.appendingPathComponent("run")
 private let configURL = petRoot.appendingPathComponent("config.json")
 private let reviewOffURL = petRoot.appendingPathComponent("review_off.txt")
+private let showFlagURL = runDir.appendingPathComponent("pet.show")
+private let hiddenFlagURL = runDir.appendingPathComponent("pet.hidden")
 
 private struct MotionSpec: Decodable {
     let key: String
@@ -1277,6 +1279,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
+        try? FileManager.default.removeItem(at: showFlagURL)
+        try? FileManager.default.removeItem(at: hiddenFlagURL)
         applyMotion(index: index, loop: loop)
         startTimers()
         pollSessions()
@@ -1831,6 +1835,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func pollSessions() {
+        if FileManager.default.fileExists(atPath: showFlagURL.path) {
+            try? FileManager.default.removeItem(at: showFlagURL)
+            if petHidden { togglePetVisible() }
+        }
         syncHoverFromPointer()
         var loaded = loadSessions()
         trackSessionStates(loaded)
@@ -2365,21 +2373,48 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             let running = sessions.filter { $0.state != "idle" && $0.state != "done" }
             guard !running.isEmpty else { return nil }
             let capacity = narration == nil ? 3 : 2
-            var rows = running.prefix(capacity).map { session in
-                let pct = usageBySession[session.id].flatMap { used -> String? in
+            let visible = Array(running.prefix(capacity))
+            let overflow = running.count - visible.count
+            let avail = 300 * fontScale - 34 * BubbleView.scale
+            func textWidth(_ value: String, _ font: NSFont) -> CGFloat {
+                (value as NSString).size(withAttributes: [.font: font]).width
+            }
+            func rowWidth(name: String, state: String, time: String?, pct: String?) -> CGFloat {
+                var total = textWidth("[" + name + "]", BubbleView.prefixFont) + 7 * BubbleView.scale
+                if let time, !time.isEmpty { total += textWidth(time + "  ", BubbleView.monoFont) }
+                total += textWidth(state, BubbleView.titleFont)
+                if let pct, !pct.isEmpty { total += textWidth(" · " + pct, BubbleView.detailFont) }
+                return total
+            }
+            var rows: [BubbleView.Row] = []
+            for (i, session) in visible.enumerated() {
+                var pct = usageBySession[session.id].flatMap { used -> String? in
                     guard used > 0 else { return nil }
                     return "\(Int((Double(used) / Double(max(contextWindow, 1)) * 100).rounded()))%"
                 }
-                return BubbleView.Row(
-                    name: shortName(displayName(session), limit: 16),
-                    state: stateLabel(session.state),
+                let time = turnElapsedLabel(for: session)
+                var state = stateLabel(session.state)
+                if i == visible.count - 1, overflow > 0 {
+                    state += " · 还有 \(overflow) 个"
+                }
+                let fullName = displayName(session)
+                var name = shortName(fullName, limit: 16)
+                if rowWidth(name: name, state: state, time: time, pct: pct) > avail {
+                    pct = nil
+                    var limit = name.count
+                    while limit > 6,
+                          rowWidth(name: name, state: state, time: time, pct: nil) > avail {
+                        limit -= 1
+                        name = shortName(fullName, limit: limit)
+                    }
+                }
+                rows.append(BubbleView.Row(
+                    name: name,
+                    state: state,
                     color: stateColor(session.state),
-                    time: turnElapsedLabel(for: session),
+                    time: time,
                     pct: pct
-                )
-            }
-            if running.count > capacity, !rows.isEmpty {
-                rows[rows.count - 1].state += " · 还有 \(running.count - capacity) 个"
+                ))
             }
             return BubbleView.Content(
                 prefix: nil,
@@ -3598,6 +3633,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private func togglePetVisible() {
         petHidden.toggle()
         if petHidden {
+            FileManager.default.createFile(atPath: hiddenFlagURL.path, contents: nil)
             hideStats()
             bubbleShown = false
             badgeShown = false
@@ -3610,6 +3646,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             effortPanel?.orderOut(nil)
             panel?.orderOut(nil)
         } else {
+            try? FileManager.default.removeItem(at: hiddenFlagURL)
+            try? FileManager.default.removeItem(at: showFlagURL)
             panel?.orderFrontRegardless()
             refreshTitles()
             updateBubble()
@@ -3716,6 +3754,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             keyEquivalent: hotKeyEnabled ? "p" : ""
         )
         hideItem.keyEquivalentModifierMask = [.command, .option]
+        hideItem.toolTip = "隐藏后用 ⌥⌘P 或 petctl.sh show 恢复"
         hideItem.target = self
         menu.addItem(hideItem)
         menu.addItem(.separator())

@@ -16,7 +16,7 @@ cd ~/.claude/pet
 安装脚本会构建 `bin/CodexPet`、合并 `~/.claude/settings.json` 的 hooks、向 `~/.zshrc` 写入带标记的 `claude()` 包装函数。完成后新开终端运行 `claude` 即可。
 
 - 自定义位置：`CODEX_PET_DIR=~/somewhere ./install.sh`（安装器会把该路径写进 zshrc）
-- 启停：`~/.claude/pet/petctl.sh start|stop|restart|status`
+- 启停：`~/.claude/pet/petctl.sh start|stop|restart|show|status`（`show` 把隐藏的宠物重新显示出来）
 - 卸载：`~/.claude/pet/uninstall.sh`，加 `--purge` 一并删除统计与窗口状态
 - 临时禁用（不卸载）：`export CODEX_PET_DISABLED=1`
 
@@ -61,7 +61,7 @@ cd ~/.claude/pet
 | 菜单 | 内容 |
 | --- | --- |
 | 回到待机 | 立即停止当前动作 |
-| 隐藏宠物 | 立即隐藏浮窗，用 ⌥⌘P 恢复（快捷键关闭时需重启宠物） |
+| 隐藏宠物 | 立即隐藏浮窗，用 ⌥⌘P 或 `petctl.sh show` 恢复 |
 | 动画 | 手动播放动作，或为每种状态指定对应动画 |
 | 会话 | 各会话的上下文、力度、恢复、审查等操作 |
 | 生图模型 | 火山方舟图像模型、价格与刷新 |
@@ -95,7 +95,7 @@ pet_hook.py        Claude Code hooks → 状态文件桥
 pet_wrapper.zsh    zsh claude() 包装函数（由 install.sh 写入 ~/.zshrc）
 install.sh         一键安装：构建 + hooks + zshrc
 uninstall.sh       卸载 hooks 与包装函数（--purge 删除整个目录）
-petctl.sh          宠物进程控制：start / stop / restart / status
+petctl.sh          宠物进程控制：start / stop / restart / show / status
 build_assets.py    精灵表切帧工具（生成 assets/manifest.json 与逐帧 PNG）
 build.sh           构建脚本
 config.json        上下文窗口与预警阈值
@@ -183,7 +183,7 @@ source ~/.claude/pet/pet_wrapper.zsh
 ## 启动
 
 ```zsh
-~/.claude/pet/petctl.sh start     # 也支持 stop / restart / status
+~/.claude/pet/petctl.sh start     # 也支持 stop / restart / show / status
 ```
 
 手动启动时不要用 `open`——会弹出终端窗口，关窗时宠物一并被杀：
