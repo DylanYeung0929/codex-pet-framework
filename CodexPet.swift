@@ -734,7 +734,7 @@ private final class AlertDotView: NSView {
 
 private final class BubbleView: NSView {
     static var scale: CGFloat = 1.0
-    static var titleFont: NSFont { NSFont.systemFont(ofSize: 12 * scale, weight: .semibold) }
+    static var titleFont: NSFont { NSFont.monospacedDigitSystemFont(ofSize: 12 * scale, weight: .semibold) }
     static var detailFont: NSFont { NSFont.systemFont(ofSize: 11 * scale) }
     static var monoFont: NSFont { NSFont.monospacedSystemFont(ofSize: 10.5 * scale, weight: .regular) }
     static var prefixFont: NSFont { NSFont.systemFont(ofSize: 10 * scale, weight: .medium) }
@@ -743,6 +743,7 @@ private final class BubbleView: NSView {
         var name: String
         var state: String
         var color: NSColor
+        var time: String? = nil
         var pct: String? = nil
     }
 
@@ -824,6 +825,13 @@ private final class BubbleView: NSView {
                     .foregroundColor: row.color,
                     .paragraphStyle: paragraph,
                 ]))
+                if let time = row.time, !time.isEmpty {
+                    text.append(NSAttributedString(string: " " + time, attributes: [
+                        .font: BubbleView.monoFont,
+                        .foregroundColor: NSColor.white.withAlphaComponent(0.6),
+                        .paragraphStyle: paragraph,
+                    ]))
+                }
                 if let pct = row.pct, !pct.isEmpty {
                     text.append(NSAttributedString(string: " · " + pct, attributes: [
                         .font: BubbleView.detailFont,
@@ -2291,6 +2299,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     name: shortName(displayName(session), limit: 16),
                     state: stateLabel(session.state),
                     color: stateColor(session.state),
+                    time: turnElapsedLabel(for: session),
                     pct: pct
                 )
             }
@@ -2452,6 +2461,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 var name: String
                 var state: String
                 var model: String
+                var time: String
                 var percent: String
                 var color: NSColor
             }
@@ -2467,10 +2477,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     percent = "\(Int((Double(used) / Double(max(contextWindow, 1)) * 100).rounded()))%"
                 }
                 let model = shortName(modelBySession[session.id] ?? "—", limit: 18)
+                let time = turnElapsedLabel(for: session)
+                    ?? turnDurationBySession[session.id].map { formatClock($0) }
+                    ?? "—"
                 rows.append(Row(
                     name: name,
                     state: stateLabel(session.state),
                     model: model,
+                    time: time,
                     percent: percent,
                     color: stateColor(session.state)
                 ))
@@ -2484,15 +2498,18 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             let nameW = rows.map { width($0.name, nameFont) }.max() ?? 0
             let stateW = rows.map { width($0.state, stateFont) }.max() ?? 0
             let modelW = rows.map { width($0.model, modelFont) }.max() ?? 0
+            let timeW = rows.map { width($0.time, pctFont) }.max() ?? 0
             let pctW = rows.map { width($0.percent, pctFont) }.max() ?? 0
             let stateCol = ceil(nameW) + gap
             let modelCol = stateCol + ceil(stateW) + gap
-            let totalW = modelCol + (showModel ? ceil(modelW) + gap : 0) + ceil(pctW)
+            let timeCol = modelCol + (showModel ? ceil(modelW) + gap : 0)
+            let totalW = timeCol + ceil(timeW) + gap + ceil(pctW)
             minWidth = totalW
             var stops = [NSTextTab(textAlignment: .left, location: stateCol, options: [:])]
             if showModel {
                 stops.append(NSTextTab(textAlignment: .left, location: modelCol, options: [:]))
             }
+            stops.append(NSTextTab(textAlignment: .left, location: timeCol, options: [:]))
             stops.append(NSTextTab(textAlignment: .right, location: totalW, options: [:]))
             paragraph.tabStops = stops
 
@@ -2508,10 +2525,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                         .font: modelFont, .foregroundColor: dim, .paragraphStyle: paragraph,
                     ]))
                 }
+                text.append(NSAttributedString(string: row.time + "\t", attributes: [
+                    .font: pctFont, .foregroundColor: dim, .paragraphStyle: paragraph,
+                ]))
                 text.append(NSAttributedString(string: row.percent + "\n", attributes: [
                     .font: pctFont, .foregroundColor: dim, .paragraphStyle: paragraph,
                 ]))
-                key += "\(row.name)|\(row.state)|\(showModel ? row.model : "")|\(row.percent);"
+                key += "\(row.name)|\(row.state)|\(showModel ? row.model : "")|\(row.time)|\(row.percent);"
             }
             if sessions.count > 6 {
                 text.append(NSAttributedString(string: "+\(sessions.count - 6) 个会话\n", attributes: [
@@ -3058,7 +3078,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let maxLines = hovered ? 5 : 3
         var cache = "\(content.prefix ?? "")|\(content.title)|\(content.detail ?? "")|\(Int(maxWidth))|\(maxLines)"
         if !content.rows.isEmpty {
-            cache += "|" + content.rows.map { $0.name + $0.state + ($0.pct ?? "") }.joined(separator: ";")
+            cache += "|" + content.rows.map { $0.name + $0.state + ($0.time ?? "") + ($0.pct ?? "") }.joined(separator: ";")
         }
         if bubbleShown && cache == bubbleCache { return }
         bubbleCache = cache
