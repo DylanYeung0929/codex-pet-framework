@@ -2475,6 +2475,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         paragraph.lineSpacing = 3 * fontScale
         paragraph.lineBreakMode = .byTruncatingTail
 
+        func width(_ value: String, _ font: NSFont) -> CGFloat {
+            (value as NSString).size(withAttributes: [.font: font]).width
+        }
+
         let text = NSMutableAttributedString()
         var key = ""
         var minWidth: CGFloat = 0
@@ -2487,56 +2491,75 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
 
         func appendBalance() {
-            if let balance = balanceLine {
+            let dimLine = NSColor.white.withAlphaComponent(0.65)
+            func append(_ line: String) {
                 if text.length > 0 {
                     text.append(NSAttributedString(string: "\n", attributes: [.font: subFont]))
                 }
-                text.append(NSAttributedString(string: balance + " · 今日 " + formatTokens(stats.tokens) + " tokens", attributes: [
-                    .font: subFont,
-                    .foregroundColor: NSColor.white.withAlphaComponent(0.65),
-                    .paragraphStyle: paragraph,
+                if sessions.count == 1,
+                   let label = ["API 余额", "火山余额"].first(where: { line.hasPrefix($0) }) {
+                    let value = line.dropFirst(label.count).trimmingCharacters(in: .whitespaces)
+                    if !value.isEmpty {
+                        text.append(NSAttributedString(string: label + "\t", attributes: [
+                            .font: subFont, .foregroundColor: dimLine, .paragraphStyle: paragraph,
+                        ]))
+                        text.append(NSAttributedString(string: value, attributes: [
+                            .font: subFont, .foregroundColor: dimLine, .paragraphStyle: paragraph,
+                        ]))
+                        return
+                    }
+                }
+                text.append(NSAttributedString(string: line, attributes: [
+                    .font: subFont, .foregroundColor: dimLine, .paragraphStyle: paragraph,
                 ]))
             }
+            if let balance = balanceLine {
+                append(balance + " · 今日 " + formatTokens(stats.tokens) + " tokens")
+            }
             if let volc = volcLine {
-                if text.length > 0 {
-                    text.append(NSAttributedString(string: "\n", attributes: [.font: subFont]))
-                }
-                text.append(NSAttributedString(string: volc, attributes: [
-                    .font: subFont,
-                    .foregroundColor: NSColor.white.withAlphaComponent(0.65),
-                    .paragraphStyle: paragraph,
-                ]))
+                append(volc)
             }
         }
 
         if sessions.count == 1, let session = sessions.first {
+            let labelWidth = [
+                ("上下文", stateFont), ("模型", stateFont),
+                ("本轮已运行", pctFont), ("上轮用时", pctFont),
+                ("API 余额", subFont), ("火山余额", subFont),
+            ].map { width($0.0, $0.1) }.max() ?? 0
+            let valueCol = ceil(labelWidth) + 10 * fontScale
+            paragraph.tabStops = [NSTextTab(textAlignment: .left, location: valueCol, options: [:])]
             var percent = "--"
             var usage = ""
             if let used = usageBySession[session.id], used > 0 {
                 percent = "\(Int((Double(used) / Double(max(contextWindow, 1)) * 100).rounded()))%"
                 usage = " · \(formatTokens(used)) / \(formatTokens(contextWindow))"
             }
-            text.append(NSAttributedString(string: "上下文 ", attributes: [
-                .font: stateFont, .foregroundColor: body,
+            text.append(NSAttributedString(string: "上下文\t", attributes: [
+                .font: stateFont, .foregroundColor: body, .paragraphStyle: paragraph,
             ]))
             text.append(NSAttributedString(string: percent, attributes: [
-                .font: pctFont, .foregroundColor: stateColor(session.state),
+                .font: pctFont, .foregroundColor: stateColor(session.state), .paragraphStyle: paragraph,
             ]))
             text.append(NSAttributedString(string: usage, attributes: [
-                .font: pctFont, .foregroundColor: dim,
+                .font: pctFont, .foregroundColor: dim, .paragraphStyle: paragraph,
             ]))
             if let model = modelBySession[session.id], !model.isEmpty {
-                text.append(NSAttributedString(string: "\n模型 ", attributes: [
+                text.append(NSAttributedString(string: "\n模型\t", attributes: [
                     .font: stateFont, .foregroundColor: body, .paragraphStyle: paragraph,
                 ]))
                 text.append(NSAttributedString(string: model, attributes: [
                     .font: modelFont, .foregroundColor: dim, .paragraphStyle: paragraph,
                 ]))
             }
-            let turnText = turnElapsedLabel(for: session).map { "本轮已运行 " + $0 }
-                ?? turnDurationBySession[session.id].map { "上轮用时 " + formatDuration($0) }
-            if let turnText {
-                text.append(NSAttributedString(string: "\n" + turnText, attributes: [
+            let turnLabel = turnElapsedLabel(for: session).map { ("本轮已运行", $0) }
+                ?? turnDurationBySession[session.id].map { ("上轮用时", formatDuration($0)) }
+            let turnText = turnLabel.map { $0.0 + " " + $0.1 }
+            if let turnLabel {
+                text.append(NSAttributedString(string: "\n" + turnLabel.0 + "\t", attributes: [
+                    .font: pctFont, .foregroundColor: dim, .paragraphStyle: paragraph,
+                ]))
+                text.append(NSAttributedString(string: turnLabel.1, attributes: [
                     .font: pctFont, .foregroundColor: dim, .paragraphStyle: paragraph,
                 ]))
             }
@@ -2577,9 +2600,6 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             let showModel = rows.contains { $0.model != "—" }
 
             let gap: CGFloat = 16
-            func width(_ value: String, _ font: NSFont) -> CGFloat {
-                (value as NSString).size(withAttributes: [.font: font]).width
-            }
             let nameW = rows.map { width($0.name, nameFont) }.max() ?? 0
             let stateW = rows.map { width($0.state, stateFont) }.max() ?? 0
             let modelW = rows.map { width($0.model, modelFont) }.max() ?? 0
