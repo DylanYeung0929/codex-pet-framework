@@ -42,7 +42,7 @@ cd ~/.claude/pet
 - **多会话聚合**：同时运行多个 `claude` 会话时按优先级（等待输入 > 工具 > 失败 > 思考 > 完成 > 空闲）展示最需关注的会话，置顶会话活跃时优先展示；悬停徽章逐行列出各会话「聊天名 · 状态 · 上下文%」。
 - **气泡**：宽度按字号固定（不随内容或动画变化，默认 300pt），非悬停最多 3 行、悬停最多 5 行；显示聊天名、状态、上下文占用、思考内容、工具命令摘要或通知消息；多会话超出时末行标注「还有 N 个」。气泡、悬停徽章与统计卡使用系统液态玻璃（macOS 26+，深色衬底保证可读性）。
 - **悬停徽章**：玻璃卡显示所用模型、上下文占用、API 余额、火山引擎余额（读取 `~/.config/ark/env`）、今日 tokens（扫描 `~/.claude/projects` 当日 transcript，按 message.id 去重累计）。
-- **预警**：余额低于阈值、或上下文占用越过阈值时气泡提示并播放提示音（各只提醒一次，回落后重置）。
+- **余额预警**：余额低于阈值时气泡提示并播放提示音（只提醒一次，充值回落后重置）。上下文交给 Claude Code 自动压缩，宠物不再另行提醒。
 - **红点角标**：存在等待输入或失败的会话时右上角显示红点。
 - **空闲半透明**：无活跃任务且未悬停时按「空闲透明度」淡出（默认 60%，右键菜单可选 25%–100%），待机动画半速播放、刷新降至 15fps。
 - **提示音**：完成 / 失败 / 等待回复 / 余额不足四组可分别选音，选中即试听；音量 10%–200%，超过 100% 用采样增益突破系统上限。勿扰模式只静音提醒，视觉提示照常。
@@ -101,7 +101,7 @@ uninstall.sh       卸载 hooks 与包装函数（--purge 删除整个目录）
 petctl.sh          宠物进程控制：start / stop / restart / show / status
 build_assets.py    精灵表切帧工具（生成 assets/manifest.json 与逐帧 PNG）
 build.sh           构建脚本
-config.json        上下文窗口与预警阈值
+config.json        上下文窗口与余额预警阈值
 LICENSE            MIT
 source/            放置 atlas.webp（不入库）
 ```
@@ -175,7 +175,6 @@ source ~/.claude/pet/pet_wrapper.zsh
 | --- | --- | --- |
 | `contextWindow` | 200000 | 上下文百分比的分母。Claude Code 对未识别模型按 200k 压缩，建议保持一致 |
 | `balanceAlert` | 5 | 余额低于该值（元）提醒一次 |
-| `contextAlert` | 0.8 | 上下文占用达到该比例提醒一次 |
 
 余额接口：读取 `~/.claude/settings.json` 里 env 的 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`，host 含 `deepseek` 时请求 `/user/balance`，60 秒缓存。
 

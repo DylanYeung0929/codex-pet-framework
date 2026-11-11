@@ -159,7 +159,6 @@ private let stateMotionGroups: [(key: String, title: String, rep: String)] = [
 private struct PetConfig: Decodable {
     var contextWindow: Int?
     var balanceAlert: Double?
-    var contextAlert: Double?
 }
 
 private struct PetStatus: Decodable {
@@ -1083,6 +1082,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var frontTimer: Timer?
     private var titlesByTTY: [String: String] = [:]
     private var titlesBusy = false
+    private var titlesPrimed = false
     private struct FileStamp: Equatable {
         var mtime: Date
         var size: Int
@@ -1123,9 +1123,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var idleDimmed = false
     private var idleOpacity: CGFloat = 0.6
     private var balanceAlertThreshold = 5.0
-    private var contextAlertThreshold = 0.8
     private var balanceLow = false
-    private var contextHighSessions = Set<String>()
     private var turnStartBySession: [String: Double] = [:]
     private var turnDurationBySession: [String: Double] = [:]
     private var alertText: String?
@@ -1348,7 +1346,6 @@ private final class PetApp: NSObject, NSApplicationDelegate {
            let config = try? JSONDecoder().decode(PetConfig.self, from: data) {
             if let window = config.contextWindow, window >= 1000 { contextWindow = window }
             if let value = config.balanceAlert, value >= 0 { balanceAlertThreshold = value }
-            if let value = config.contextAlert, value > 0, value <= 1 { contextAlertThreshold = value }
         }
         if let raw = argValue("--context-window"), let value = Int(raw), value >= 1000 {
             contextWindow = value
@@ -1740,8 +1737,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     @objc private func refreshTitles() {
         guard !titlesBusy, !petHidden else { return }
-        // Idle titles only matter when the bubble or hover badge is visible.
-        guard hovered || currentState != "idle" else { return }
+        // Titles only matter when they can be seen: warm once, then follow visibility.
+        let activeState = currentState != "idle" && currentState != "done"
+        guard hovered || bubbleShown || activeState || !titlesPrimed else { return }
         let activeTerms = sessions.filter { $0.tty != nil }.map { $0.term }
         guard !activeTerms.isEmpty else { return }
         let wantsTerminal = activeTerms.contains { ($0 ?? "Apple_Terminal") == "Apple_Terminal" }
@@ -1802,6 +1800,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.titlesBusy = false
+                self.titlesPrimed = true
                 if map != self.titlesByTTY {
                     self.titlesByTTY = map
                     self.updateBubble()
@@ -2047,14 +2046,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     self.stats.usage[id] = used
                     self.statsDirty = true
                 }
-                self.evaluateContextAlert()
             }
         }
     }
 
     private func refreshTodayTokens() {
         let now = CACurrentMediaTime()
-        let interval: Double = (hovered || statsShown) ? 4 : 30
+        let interval: Double = (hovered || statsShown) ? 4 : 120
         guard now - lastTokenScan > interval, !tokenScanning else { return }
         lastTokenScan = now
         let day = todayKey()
@@ -2822,33 +2820,6 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             )
         }
         balanceLow = low
-    }
-
-    private func evaluateContextAlert() {
-        guard contextWindow > 0 else { return }
-        contextHighSessions.formIntersection(Set(sessions.map { $0.id }))
-        var newlyHigh: [(id: String, percent: Int)] = []
-        for session in sessions {
-            guard let used = usageBySession[session.id], used > 0 else { continue }
-            let ratio = Double(used) / Double(contextWindow)
-            if ratio >= contextAlertThreshold {
-                if !contextHighSessions.contains(session.id) {
-                    contextHighSessions.insert(session.id)
-                    newlyHigh.append((session.id, Int((ratio * 100).rounded())))
-                }
-            } else if ratio < max(contextAlertThreshold - 0.05, 0.1) {
-                contextHighSessions.remove(session.id)
-            }
-        }
-        guard let first = newlyHigh.first else { return }
-        if newlyHigh.count == 1,
-           let session = sessions.first(where: { $0.id == first.id }) {
-            let name = shortName(displayName(session), limit: 12)
-            triggerAlert("「\(name)」上下文已达 \(first.percent)%，建议 /compact")
-        } else {
-            let percent = newlyHigh.map { $0.percent }.max() ?? Int((contextAlertThreshold * 100).rounded())
-            triggerAlert("\(newlyHigh.count) 个会话上下文已达 \(percent)% 以上，建议 /compact")
-        }
     }
 
     private func loadVolcCredentials() -> Bool {
