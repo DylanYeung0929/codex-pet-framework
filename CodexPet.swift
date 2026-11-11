@@ -2198,7 +2198,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         if newState == "done" {
             doneBubbleUntil = CACurrentMediaTime() + 4.5
         }
-        if soundEnabled && !doNotDisturb && !primarySessionMuted() {
+        if soundEnabled && !doNotDisturb && !stateFullyMuted(newState) {
             switch newState {
             case "done": playSound(soundDone)
             case "failed": playSound(soundFailed)
@@ -2215,10 +2215,16 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         return mutedSessions.contains(session.id)
     }
 
-    private func primarySessionMuted() -> Bool {
-        guard let id = primaryID,
-              let session = sessions.first(where: { $0.id == id }) else { return false }
-        return sessionIsMuted(session)
+    // A transition belongs to every session that shares the new state, so the
+    // sound is only skipped when no unmuted session matches it.
+    private func stateFullyMuted(_ state: String) -> Bool {
+        let matching = sessions.filter { $0.state == state }
+        guard !matching.isEmpty else {
+            guard let id = primaryID,
+                  let session = sessions.first(where: { $0.id == id }) else { return false }
+            return sessionIsMuted(session)
+        }
+        return matching.allSatisfy { sessionIsMuted($0) }
     }
 
     private func trackToolTimeouts(_ loaded: [Session]) {
@@ -5093,6 +5099,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func menuNewSession() {
+        // Resolve before the panel activates the pet, otherwise the frontmost
+        // app is CodexPet and the target terminal falls back to a running one.
+        let term = frontmostTerminalHint()
+            ?? sessions.max(by: { $0.ts < $1.ts })?.term
+            ?? runningTerminalHint()
+            ?? "Apple_Terminal"
         let picker = NSOpenPanel()
         picker.canChooseFiles = false
         picker.canChooseDirectories = true
@@ -5106,7 +5118,6 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard picker.runModal() == .OK, let url = picker.url else { return }
         let command = "cd " + shellQuote(url.path) + " && claude"
-        let term = frontmostTerminalHint() ?? runningTerminalHint() ?? "Apple_Terminal"
         openTerminalTab(term: term, command: command)
     }
 
@@ -5131,6 +5142,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
+        process.terminationHandler = { [weak self] proc in
+            DispatchQueue.main.async {
+                guard proc.terminationStatus != 0 else { return }
+                self?.triggerAlert("无法在终端启动会话，请检查自动化权限", silent: true, duration: 4)
+            }
+        }
         try? process.run()
     }
 
