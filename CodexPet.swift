@@ -1077,7 +1077,6 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var frameIndex = 0
     private var motionStart = CACurrentMediaTime()
     private var frameTimer: Timer?
-    private var frameInterval: TimeInterval = 1.0 / 60.0
     private var statusTimer: Timer?
     private var gcTimer: Timer?
     private var titlesTimer: Timer?
@@ -1103,6 +1102,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var sessions: [Session] = []
     private var statusCache: [String: CachedStatus] = [:]
     private var termCache: [String: CachedTerm] = [:]
+    private struct CachedTranscript {
+        var stamp: FileStamp
+        var thinkingAfter: Double?
+        var wantThinking: Bool
+        var info: TranscriptInfo
+    }
+    private var transcriptCache: [String: CachedTranscript] = [:]
     private var primaryID: String?
     private var usageBySession: [String: Int] = [:]
     private var modelBySession: [String: String] = [:]
@@ -1505,6 +1511,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         positionAlertDot()
         clampToScreen()
         layoutOverlays()
+        if !petHidden { scheduleFrame(after: nextFrameDelay()) }
     }
 
     private func positionAlertDot() {
@@ -1561,18 +1568,40 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         refreshTitles()
     }
 
-    private func startFrameTimer(interval: TimeInterval) {
+    private func scheduleFrame(after delay: TimeInterval) {
         frameTimer?.invalidate()
+        let step = max(delay, 0.005)
         let timer = Timer(
-            timeInterval: interval,
+            timeInterval: step,
             target: self,
             selector: #selector(tick),
             userInfo: nil,
-            repeats: true
+            repeats: false
         )
-        timer.tolerance = interval * 0.2
+        timer.tolerance = min(step * 0.15, 0.02)
         RunLoop.main.add(timer, forMode: .common)
         frameTimer = timer
+    }
+
+    private func nextFrameDelay() -> TimeInterval {
+        guard motions.indices.contains(index) else { return 0.2 }
+        let motion = motions[index]
+        let total = motion.total
+        guard total > 0, !motion.durations.isEmpty else { return 0.2 }
+        let playback = max(idleAnimationActive ? speed * 0.5 : speed, 0.01)
+        let elapsed = (CACurrentMediaTime() - motionStart) * playback
+        let repeats = max(motionRepeats, 1)
+        let span = total * (loop ? 1 : Double(repeats))
+        if !loop && elapsed >= span { return 0.05 }
+        let t = (loop || repeats > 1) ? fmod(elapsed, total) : elapsed
+        var cursor = 0.0
+        for duration in motion.durations {
+            if t < cursor + duration {
+                return max((cursor + duration - t) / playback, 0.005)
+            }
+            cursor += duration
+        }
+        return 0.05
     }
 
     // idle state uses its mapped motion; after a finished turn the loop also
@@ -1583,15 +1612,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         return motions.indices.contains(index) && motions[index].key == motionKey(for: "idle")
     }
 
-    private func updateFrameRate() {
-        let target = idleAnimationActive ? 1.0 / 15.0 : 1.0 / 60.0
-        guard abs(target - frameInterval) > 0.001 else { return }
-        frameInterval = target
-        startFrameTimer(interval: target)
-    }
-
     private func startTimers() {
-        startFrameTimer(interval: frameInterval)
+        scheduleFrame(after: 0.05)
 
         let status = Timer(
             timeInterval: 0.3,
@@ -1718,6 +1740,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     @objc private func refreshTitles() {
         guard !titlesBusy, !petHidden else { return }
+        // Idle titles only matter when the bubble or hover badge is visible.
+        guard hovered || currentState != "idle" else { return }
         let activeTerms = sessions.filter { $0.tty != nil }.map { $0.term }
         guard !activeTerms.isEmpty else { return }
         let wantsTerminal = activeTerms.contains { ($0 ?? "Apple_Terminal") == "Apple_Terminal" }
@@ -1793,8 +1817,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func tick() {
-        guard !motions.isEmpty else { return }
-        updateFrameRate()
+        guard !petHidden, !motions.isEmpty else { return }
         let motion = motions[index]
         let total = motion.total
         guard total > 0 else { return }
@@ -1817,6 +1840,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             } else {
                 setMotion(motionKey(for: "idle"), loop: true)
             }
+            scheduleFrame(after: nextFrameDelay())
             return
         }
 
@@ -1834,6 +1858,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             frameIndex = next
             petView.show(motion.images[next])
         }
+        scheduleFrame(after: nextFrameDelay())
     }
 
     @objc private func pollSessions() {
@@ -2003,7 +2028,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             var next: [String: Int] = [:]
             var models: [String: String] = [:]
             for (id, path) in snapshot {
-                let info = self.readTranscript(path: path, thinkingAfter: nil, wantThinking: false)
+                let info = self.cachedTranscript(path: path, thinkingAfter: nil, wantThinking: false)
                 if let model = info.model, !model.isEmpty {
                     models[id] = model
                 }
@@ -2011,6 +2036,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     next[id] = used
                 }
             }
+            let livePaths = Set(snapshot.map { $0.1 })
+            self.transcriptCache = self.transcriptCache.filter { livePaths.contains($0.key) }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.usageRefreshing = false
@@ -2027,7 +2054,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     private func refreshTodayTokens() {
         let now = CACurrentMediaTime()
-        guard now - lastTokenScan > 4, !tokenScanning else { return }
+        let interval: Double = (hovered || statsShown) ? 4 : 30
+        guard now - lastTokenScan > interval, !tokenScanning else { return }
         lastTokenScan = now
         let day = todayKey()
         if tokenScanDay != day {
@@ -2098,6 +2126,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     self.stats.tokens = total
                     self.statsDirty = true
                     self.updateBadge()
+                    self.refreshStatsCard()
                 }
             }
         }
@@ -2213,7 +2242,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let thinkingAfter = state == "thinking" ? thinkingFloor : nil
         scanQueue.async { [weak self] in
             guard let self else { return }
-            let info = self.readTranscript(path: path, thinkingAfter: thinkingAfter)
+            let info = self.cachedTranscript(path: path, thinkingAfter: thinkingAfter, wantThinking: true)
             let scanned = self.scanAssistantText(path: path)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -2310,6 +2339,28 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         } catch {
             return state.text
         }
+    }
+
+    // Only valid on scanQueue: avoids re-reading the tail when the file is unchanged.
+    private func cachedTranscript(path: String, thinkingAfter: Double?, wantThinking: Bool) -> TranscriptInfo {
+        let url = URL(fileURLWithPath: path)
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let stamp = FileStamp(
+            mtime: values?.contentModificationDate ?? .distantPast,
+            size: values?.fileSize ?? 0
+        )
+        if let hit = transcriptCache[path], hit.stamp == stamp,
+           hit.thinkingAfter == thinkingAfter, hit.wantThinking == wantThinking {
+            return hit.info
+        }
+        let info = readTranscript(path: path, thinkingAfter: thinkingAfter, wantThinking: wantThinking)
+        transcriptCache[path] = CachedTranscript(
+            stamp: stamp,
+            thinkingAfter: thinkingAfter,
+            wantThinking: wantThinking,
+            info: info
+        )
+        return info
     }
 
     private func readTranscript(path: String, thinkingAfter: Double?, wantThinking: Bool = true) -> TranscriptInfo {
@@ -3280,6 +3331,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             refreshTranscript(force: true)
             lastUsageRead = 0
             refreshUsages()
+            lastTokenScan = 0
+            refreshTodayTokens()
+            refreshTitles()
             refreshBalance(force: true)
             refreshVolcBalance(force: true)
         }
@@ -3657,7 +3711,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             try? FileManager.default.removeItem(at: hiddenFlagURL)
             try? FileManager.default.removeItem(at: showFlagURL)
             try? FileManager.default.removeItem(at: hideFlagURL)
-            startFrameTimer(interval: frameInterval)
+            scheduleFrame(after: 0.01)
             panel?.orderFrontRegardless()
             refreshTitles()
             updateBubble()
@@ -5089,24 +5143,31 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         statsMode = mode
         lastUsageRead = 0
         refreshUsages()
-        let text = statsAttributed(mode: mode)
-        let maxWidth: CGFloat = mode == .history ? 380 * fontScale : 340 * fontScale
-        let minWidth: CGFloat = mode == .history ? 220 * fontScale : 190
-        let size = statsView.fit(text, maxWidth: maxWidth, minWidth: minWidth)
-        statsSize = size
-        statsView.show(text, frame: NSRect(origin: .zero, size: size))
-        statsPanel.setFrame(NSRect(origin: statsPanel.frame.origin, size: size), display: true)
+        lastTokenScan = 0
+        refreshTodayTokens()
         if !statsShown {
             statsShown = true
             statsPanel.orderFront(nil)
         }
-        positionStats()
+        refreshStatsCard()
         statsHideTimer?.invalidate()
         let timer = Timer(timeInterval: mode == .history ? 10 : 6, repeats: false) { [weak self] _ in
             self?.hideStats()
         }
         RunLoop.main.add(timer, forMode: .common)
         statsHideTimer = timer
+    }
+
+    private func refreshStatsCard() {
+        guard statsShown, statsPanel != nil else { return }
+        let text = statsAttributed(mode: statsMode)
+        let maxWidth: CGFloat = statsMode == .history ? 380 * fontScale : 340 * fontScale
+        let minWidth: CGFloat = statsMode == .history ? 220 * fontScale : 190
+        let size = statsView.fit(text, maxWidth: maxWidth, minWidth: minWidth)
+        statsSize = size
+        statsView.show(text, frame: NSRect(origin: .zero, size: size))
+        statsPanel.setFrame(NSRect(origin: statsPanel.frame.origin, size: size), display: true)
+        positionStats()
     }
 
     private func hideStats() {
