@@ -904,7 +904,7 @@ private final class BubbleView: NSView {
         let lineHeight = ceil(BubbleView.titleFont.boundingRectForFont.height)
             + (content.rows.isEmpty ? 2 : 6) * scale
         let textHeight = min(ceil(used.height) + 4 * scale, lineHeight * CGFloat(maxLines))
-        let width = min(maxWidth, max(150 * scale, ceil(used.width) + hPad * 2 + 4 * scale))
+        let width = maxWidth
         let height = max(textHeight, lineHeight) + vPad * 2
         return NSSize(width: width, height: height)
     }
@@ -3179,7 +3179,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             }
             return
         }
-        let maxWidth = max(260, min(420, panel.frame.width * 3.2))
+        let maxWidth: CGFloat = 300 * fontScale
         let maxLines = hovered ? 5 : 3
         var cache = "\(content.prefix ?? "")|\(content.time ?? "")|\(content.title)|\(content.detail ?? "")|\(Int(maxWidth))|\(maxLines)"
         if !content.rows.isEmpty {
