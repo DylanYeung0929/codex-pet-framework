@@ -1060,6 +1060,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var stats = PetStats(day: "")
     private var statsSeen = Set<String>()
     private var prevSessionStates: [String: String] = [:]
+    private var newlyEnteredStates = Set<String>()
     private var statsDirty = false
     private var menuSessionIDs: [String] = []
     private var sessionModelsCache: [String] = []
@@ -2215,8 +2216,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         return mutedSessions.contains(session.id)
     }
 
-    // A transition belongs to every session that shares the new state, so the
-    // sound is only skipped when no unmuted session matches it.
+    // Attribute the alert to the sessions that just entered this state, so an
+    // old unmuted session cannot speak for a newly muted one (or vice versa).
     private func stateFullyMuted(_ state: String) -> Bool {
         let matching = sessions.filter { $0.state == state }
         guard !matching.isEmpty else {
@@ -2224,7 +2225,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                   let session = sessions.first(where: { $0.id == id }) else { return false }
             return sessionIsMuted(session)
         }
-        return matching.allSatisfy { sessionIsMuted($0) }
+        let entering = matching.filter { newlyEnteredStates.contains($0.id) }
+        return (entering.isEmpty ? matching : entering).allSatisfy { sessionIsMuted($0) }
     }
 
     private func trackToolTimeouts(_ loaded: [Session]) {
@@ -5523,6 +5525,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func trackSessionStates(_ loaded: [Session]) {
+        newlyEnteredStates = []
         for session in loaded {
             if !statsSeen.contains(session.id) {
                 statsSeen.insert(session.id)
@@ -5530,6 +5533,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 statsDirty = true
             }
             if let prev = prevSessionStates[session.id], prev != session.state {
+                newlyEnteredStates.insert(session.id)
                 if session.state == "done" {
                     stats.done += 1
                     statsDirty = true
