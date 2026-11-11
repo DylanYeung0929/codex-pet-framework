@@ -2305,16 +2305,18 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 rows: rows
             )
         }
-        let prefix: String? = {
-            guard let id = primaryID,
-                  let primary = sessions.first(where: { $0.id == id }) else { return nil }
-            return "[" + shortName(displayName(primary), limit: 14) + "]"
-        }()
+        let primarySession = primaryID.flatMap { id in
+            sessions.first(where: { $0.id == id })
+        }
+        let prefix = primarySession.map { "[" + shortName(displayName($0), limit: 14) + "]" }
+        let elapsedSuffix = primarySession
+            .flatMap { turnElapsedLabel(for: $0) }
+            .map { " · 已运行 " + $0 } ?? ""
         switch currentState {
         case "thinking":
             return BubbleView.Content(
                 prefix: prefix,
-                title: "思考中",
+                title: "思考中" + elapsedSuffix,
                 detail: narration ?? (lastThinking.isEmpty ? nil : tailSnippet(lastThinking, 200)),
                 mono: false
             )
@@ -2322,14 +2324,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             let name = statusTool.isEmpty ? "工具" : statusTool
             return BubbleView.Content(
                 prefix: prefix,
-                title: "正在运行 " + name,
+                title: "正在运行 " + name + elapsedSuffix,
                 detail: narration,
                 mono: false
             )
         case "waiting":
             return BubbleView.Content(
                 prefix: prefix,
-                title: "等待你的操作",
+                title: "等待你的操作" + elapsedSuffix,
                 detail: statusMessage.isEmpty ? nil : statusMessage,
                 mono: false
             )
@@ -2437,7 +2439,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     .font: modelFont, .foregroundColor: dim, .paragraphStyle: paragraph,
                 ]))
             }
-            key = "1|\(percent)|\(usage)|\(modelBySession[session.id] ?? "")"
+            let turnText = turnElapsedLabel(for: session).map { "本轮已运行 " + $0 }
+                ?? turnDurationBySession[session.id].map { "上轮用时 " + formatDuration($0) }
+            if let turnText {
+                text.append(NSAttributedString(string: "\n" + turnText, attributes: [
+                    .font: pctFont, .foregroundColor: dim, .paragraphStyle: paragraph,
+                ]))
+            }
+            key = "1|\(percent)|\(usage)|\(modelBySession[session.id] ?? "")|\(turnText ?? "")"
         } else {
             struct Row {
                 var name: String
@@ -4102,6 +4111,23 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         guard let used = usageBySession[session.id], used > 0 else { return "上下文 --" }
         let percent = Int((Double(used) / Double(max(contextWindow, 1)) * 100).rounded())
         return "上下文 \(percent)% · \(formatTokens(used)) / \(formatTokens(contextWindow))"
+    }
+
+    private func turnElapsedLabel(for session: Session) -> String? {
+        let activeStates: Set<String> = ["thinking", "bash", "search", "tool", "waiting", "start"]
+        guard activeStates.contains(session.state),
+              let start = session.turnStart ?? turnStartBySession[session.id] else { return nil }
+        let elapsed = Date().timeIntervalSince1970 - start
+        guard elapsed >= 0 else { return nil }
+        return formatClock(elapsed)
+    }
+
+    private func formatClock(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds))
+        if total >= 3600 {
+            return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+        }
+        return String(format: "%02d:%02d", total / 60, total % 60)
     }
 
     private func sessionTurnLabel(_ session: Session) -> String? {
