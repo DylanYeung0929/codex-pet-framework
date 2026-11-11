@@ -67,6 +67,7 @@ private struct PetState: Codable {
     var pinnedSession: String?
     var effortBySession: [String: String]? = nil
     var mutedSessions: [String]? = nil
+    var toolTimeout: Double? = nil
 }
 
 private struct PetDayRecord: Codable {
@@ -1129,6 +1130,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var balanceLow = false
     private var mutedSessions = Set<String>()
     private var toolTimeout: Double = 600
+    private var toolTimeoutOverride: Double?
     private var toolRunStart: [String: Double] = [:]
     private var toolRunAlerted = Set<String>()
     private var turnStartBySession: [String: Double] = [:]
@@ -1331,6 +1333,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if let value = state.idleOpacity { idleOpacity = min(max(CGFloat(value), 0.1), 1.0) }
             if let value = state.pinnedSession, !value.isEmpty { pinnedSessionID = value }
             if let list = state.mutedSessions { mutedSessions = Set(list) }
+            if let value = state.toolTimeout, value >= 0 {
+                toolTimeoutOverride = value
+                toolTimeout = value * 60
+            }
             if let map = state.effortBySession {
                 let known = Set(effortLevels.map { $0.id })
                 for (session, level) in map where known.contains(level) {
@@ -1356,7 +1362,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
            let config = try? JSONDecoder().decode(PetConfig.self, from: data) {
             if let window = config.contextWindow, window >= 1000 { contextWindow = window }
             if let value = config.balanceAlert, value >= 0 { balanceAlertThreshold = value }
-            if let value = config.toolTimeout, value >= 0 { toolTimeout = value * 60 }
+            if toolTimeoutOverride == nil,
+               let value = config.toolTimeout, value >= 0 {
+                toolTimeout = value * 60
+            }
         }
         if let raw = argValue("--context-window"), let value = Int(raw), value >= 1000 {
             contextWindow = value
@@ -3803,7 +3812,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             idleOpacity: Double(idleOpacity),
             pinnedSession: pinnedSessionID,
             effortBySession: effortBySession.isEmpty ? nil : effortBySession,
-            mutedSessions: mutedSessions.isEmpty ? nil : mutedSessions.sorted()
+            mutedSessions: mutedSessions.isEmpty ? nil : mutedSessions.sorted(),
+            toolTimeout: toolTimeoutOverride
         )
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: stateURL, options: .atomic)
@@ -4290,6 +4300,21 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             targetItem.submenu = choices
             soundMenu.addItem(targetItem)
         }
+        let timeoutItem = NSMenuItem(title: "工具超时阈值", action: nil, keyEquivalent: "")
+        let timeoutMenu = NSMenu()
+        for minutes in [0, 5, 10, 15, 30, 60] {
+            let item = NSMenuItem(
+                title: minutes == 0 ? "关闭" : "\(minutes) 分钟",
+                action: #selector(menuToolTimeout(_:)),
+                keyEquivalent: ""
+            )
+            item.tag = minutes
+            item.target = self
+            if abs(toolTimeout - Double(minutes) * 60) < 0.5 { item.state = .on }
+            timeoutMenu.addItem(item)
+        }
+        timeoutItem.submenu = timeoutMenu
+        soundMenu.addItem(timeoutItem)
         soundMenu.addItem(.separator())
         let volumeItem = NSMenuItem(title: "音量", action: nil, keyEquivalent: "")
         let volumeMenu = NSMenu()
@@ -4565,6 +4590,20 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         guard alertSounds.indices.contains(sender.tag) else { return }
         soundTool = alertSounds[sender.tag].id
         playSound(soundTool)
+        saveState()
+    }
+
+    @objc private func menuToolTimeout(_ sender: NSMenuItem) {
+        let minutes = max(0, sender.tag)
+        toolTimeoutOverride = Double(minutes)
+        toolTimeout = Double(minutes) * 60
+        toolRunStart.removeAll()
+        toolRunAlerted.removeAll()
+        triggerAlert(
+            minutes == 0 ? "工具超时提醒已关闭" : "工具超时提醒：\(minutes) 分钟",
+            silent: true,
+            duration: 2.5
+        )
         saveState()
     }
 
