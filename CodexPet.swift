@@ -508,6 +508,7 @@ private final class BubbleView: NSView {
         var name: String
         var state: String
         var color: NSColor
+        var pct: String? = nil
     }
 
     struct Content {
@@ -588,6 +589,13 @@ private final class BubbleView: NSView {
                     .foregroundColor: row.color,
                     .paragraphStyle: paragraph,
                 ]))
+                if let pct = row.pct, !pct.isEmpty {
+                    text.append(NSAttributedString(string: " · " + pct, attributes: [
+                        .font: BubbleView.detailFont,
+                        .foregroundColor: NSColor.white.withAlphaComponent(0.6),
+                        .paragraphStyle: paragraph,
+                    ]))
+                }
                 if i < content.rows.count - 1 {
                     text.append(NSAttributedString(string: "\n", attributes: [
                         .font: BubbleView.titleFont,
@@ -789,6 +797,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var menuSessionIDs: [String] = []
     private var sessionModelsCache: [String] = []
     private var sessionModelsCacheAt: Double = 0
+    private var sessionModelsRefreshing = false
     private var reviewOffIDs: Set<String> = []
     private var motionMap: [String: String] = [:]
     private var alertDot: AlertDotView!
@@ -811,6 +820,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var sessions: [Session] = []
     private var primaryID: String?
     private var usageBySession: [String: Int] = [:]
+    private var modelBySession: [String: String] = [:]
     private var emptySince: Date?
     private var lastUsageRead: Double = 0
     private var idleDimmed = false
@@ -962,6 +972,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         loadMotions()
         makePanel()
         refreshVolcBalance(force: true)
+        prefetchRecentModels()
         applyHotKeySetting()
         NotificationCenter.default.addObserver(
             self,
@@ -1312,18 +1323,32 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         statsTimer = stats5
     }
 
+    private func frontmostTerminalHint() -> String? {
+        switch NSWorkspace.shared.frontmostApplication?.bundleIdentifier {
+        case "com.apple.Terminal": return "Apple_Terminal"
+        case "com.googlecode.iterm2": return "iTerm.app"
+        default: return nil
+        }
+    }
+
+    private func runningTerminalHint() -> String? {
+        let ids = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+        if ids.contains("com.googlecode.iterm2") { return "iTerm.app" }
+        if ids.contains("com.apple.Terminal") { return "Apple_Terminal" }
+        return nil
+    }
+
     @objc private func refreshFrontTTY() {
         guard currentOnly, !frontBusy else { return }
-        let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let termHint: String?
-        if bundle == "com.apple.Terminal" {
-            termHint = "Apple_Terminal"
-        } else if bundle == "com.googlecode.iterm2" {
-            termHint = "iTerm.app"
+        if let front = frontmostTerminalHint() {
+            termHint = front
         } else {
             // In another app, follow the most recently active session's
             // terminal instead of always preferring iTerm2.
             termHint = sessions.max { $0.ts < $1.ts }?.term
+                ?? sessions.compactMap { $0.term }.first
+                ?? runningTerminalHint()
         }
         let useITerm = termHint?.hasPrefix("iTerm") == true
         let script = useITerm ? """
@@ -1583,9 +1608,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         guard now - lastUsageRead > 0.6 else { return }
         lastUsageRead = now
         var next: [String: Int] = [:]
+        var models: [String: String] = [:]
         for session in sessions {
             guard let path = session.transcript else { continue }
             let info = readTranscript(path: path, thinkingAfter: nil, wantThinking: false)
+            if let model = info.model, !model.isEmpty {
+                models[session.id] = model
+            }
             if let used = info.used, used > 0 {
                 next[session.id] = used
                 if stats.usage[session.id] != used {
@@ -1595,6 +1624,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             }
         }
         usageBySession = next
+        modelBySession = models
         evaluateContextAlert()
     }
 
@@ -1903,10 +1933,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             guard !running.isEmpty else { return nil }
             let capacity = narration == nil ? 3 : 2
             var rows = running.prefix(capacity).map { session in
-                BubbleView.Row(
+                let pct = usageBySession[session.id].flatMap { used -> String? in
+                    guard used > 0 else { return nil }
+                    return "\(Int((Double(used) / Double(max(contextWindow, 1)) * 100).rounded()))%"
+                }
+                return BubbleView.Row(
                     name: shortName(displayName(session), limit: 16),
                     state: stateLabel(session.state),
-                    color: stateColor(session.state)
+                    color: stateColor(session.state),
+                    pct: pct
                 )
             }
             if running.count > capacity, !rows.isEmpty {
@@ -1986,6 +2021,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let nameFont = NSFont.systemFont(ofSize: 11 * fontScale, weight: .semibold)
         let stateFont = NSFont.systemFont(ofSize: 11 * fontScale, weight: .medium)
         let pctFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5 * fontScale, weight: .regular)
+        let modelFont = NSFont.monospacedSystemFont(ofSize: 10 * fontScale, weight: .regular)
         let subFont = NSFont.systemFont(ofSize: 10.5 * fontScale, weight: .regular)
         let dim = NSColor.white.withAlphaComponent(0.55)
         let body = NSColor.white.withAlphaComponent(0.92)
@@ -2043,11 +2079,20 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             text.append(NSAttributedString(string: usage, attributes: [
                 .font: pctFont, .foregroundColor: dim,
             ]))
-            key = "1|\(percent)|\(usage)"
+            if let model = modelBySession[session.id], !model.isEmpty {
+                text.append(NSAttributedString(string: "\n模型 ", attributes: [
+                    .font: stateFont, .foregroundColor: body, .paragraphStyle: paragraph,
+                ]))
+                text.append(NSAttributedString(string: model, attributes: [
+                    .font: modelFont, .foregroundColor: dim, .paragraphStyle: paragraph,
+                ]))
+            }
+            key = "1|\(percent)|\(usage)|\(modelBySession[session.id] ?? "")"
         } else {
             struct Row {
                 var name: String
                 var state: String
+                var model: String
                 var percent: String
                 var color: NSColor
             }
@@ -2062,13 +2107,16 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 if let used = usageBySession[session.id], used > 0 {
                     percent = "\(Int((Double(used) / Double(max(contextWindow, 1)) * 100).rounded()))%"
                 }
+                let model = shortName(modelBySession[session.id] ?? "—", limit: 18)
                 rows.append(Row(
                     name: name,
                     state: stateLabel(session.state),
+                    model: model,
                     percent: percent,
                     color: stateColor(session.state)
                 ))
             }
+            let showModel = rows.contains { $0.model != "—" }
 
             let gap: CGFloat = 16
             func width(_ value: String, _ font: NSFont) -> CGFloat {
@@ -2076,14 +2124,18 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             }
             let nameW = rows.map { width($0.name, nameFont) }.max() ?? 0
             let stateW = rows.map { width($0.state, stateFont) }.max() ?? 0
+            let modelW = rows.map { width($0.model, modelFont) }.max() ?? 0
             let pctW = rows.map { width($0.percent, pctFont) }.max() ?? 0
             let stateCol = ceil(nameW) + gap
-            let totalW = stateCol + ceil(stateW) + gap + ceil(pctW)
+            let modelCol = stateCol + ceil(stateW) + gap
+            let totalW = modelCol + (showModel ? ceil(modelW) + gap : 0) + ceil(pctW)
             minWidth = totalW
-            paragraph.tabStops = [
-                NSTextTab(textAlignment: .left, location: stateCol, options: [:]),
-                NSTextTab(textAlignment: .right, location: totalW, options: [:]),
-            ]
+            var stops = [NSTextTab(textAlignment: .left, location: stateCol, options: [:])]
+            if showModel {
+                stops.append(NSTextTab(textAlignment: .left, location: modelCol, options: [:]))
+            }
+            stops.append(NSTextTab(textAlignment: .right, location: totalW, options: [:]))
+            paragraph.tabStops = stops
 
             for row in rows {
                 text.append(NSAttributedString(string: row.name + "\t", attributes: [
@@ -2092,10 +2144,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 text.append(NSAttributedString(string: row.state + "\t", attributes: [
                     .font: stateFont, .foregroundColor: row.color, .paragraphStyle: paragraph,
                 ]))
+                if showModel {
+                    text.append(NSAttributedString(string: row.model + "\t", attributes: [
+                        .font: modelFont, .foregroundColor: dim, .paragraphStyle: paragraph,
+                    ]))
+                }
                 text.append(NSAttributedString(string: row.percent + "\n", attributes: [
                     .font: pctFont, .foregroundColor: dim, .paragraphStyle: paragraph,
                 ]))
-                key += "\(row.name)|\(row.state)|\(row.percent);"
+                key += "\(row.name)|\(row.state)|\(showModel ? row.model : "")|\(row.percent);"
             }
             if sessions.count > 6 {
                 text.append(NSAttributedString(string: "+\(sessions.count - 6) 个会话\n", attributes: [
@@ -2636,7 +2693,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let maxLines = hovered ? 5 : 3
         var cache = "\(content.prefix ?? "")|\(content.title)|\(content.detail ?? "")|\(Int(maxWidth))|\(maxLines)"
         if !content.rows.isEmpty {
-            cache += "|" + content.rows.map { $0.name + $0.state }.joined(separator: ";")
+            cache += "|" + content.rows.map { $0.name + $0.state + ($0.pct ?? "") }.joined(separator: ";")
         }
         if bubbleShown && cache == bubbleCache { return }
         bubbleCache = cache
@@ -2750,6 +2807,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             } else {
                 try? fm.removeItem(at: url)
                 try? fm.removeItem(at: runDir.appendingPathComponent(id + ".json"))
+                try? fm.removeItem(at: runDir.appendingPathComponent(id + ".term"))
             }
         }
 
@@ -2760,6 +2818,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 .contentModificationDate
             if let mtime, Date().timeIntervalSince(mtime) > 7200 {
                 try? fm.removeItem(at: url)
+                try? fm.removeItem(at: runDir.appendingPathComponent(id + ".term"))
             } else {
                 live += 1
             }
@@ -3131,6 +3190,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 )
                 contextItem.isEnabled = false
                 sub.addItem(contextItem)
+                let modelItem = NSMenuItem(
+                    title: "模型 " + (modelBySession[session.id] ?? "--"),
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                modelItem.isEnabled = false
+                sub.addItem(modelItem)
                 sub.addItem(.separator())
                 let focus = NSMenuItem(
                     title: "聚焦终端",
@@ -3141,6 +3207,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 focus.target = self
                 focus.isEnabled = session.tty != nil
                 sub.addItem(focus)
+                let copyID = NSMenuItem(
+                    title: "复制会话 UUID",
+                    action: #selector(menuCopySessionID(_:)),
+                    keyEquivalent: ""
+                )
+                copyID.tag = i
+                copyID.target = self
+                copyID.isEnabled = session.resumeID != nil
+                sub.addItem(copyID)
                 sub.addItem(.separator())
                 let resume = NSMenuItem(
                     title: "默认模型",
@@ -3701,6 +3776,16 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         saveReviewOff()
     }
 
+    @objc private func menuCopySessionID(_ sender: NSMenuItem) {
+        guard menuSessionIDs.indices.contains(sender.tag),
+              let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] }),
+              let id = session.resumeID
+        else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(id, forType: .string)
+    }
+
     @objc private func menuResumeSession(_ sender: NSMenuItem) {
         guard menuSessionIDs.indices.contains(sender.tag),
               let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] }),
@@ -3730,7 +3815,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         var line = "cd " + shellQuote(cwd) + " && claude --resume " + shellQuote(id)
         if let model { line += " --model " + shellQuote(model) }
         if noReview { line += " --dangerously-skip-permissions" }
-        openTerminalWindow(term: session.term ?? "Apple_Terminal", command: line)
+        let term = session.term ?? frontmostTerminalHint() ?? runningTerminalHint() ?? "Apple_Terminal"
+        openTerminalWindow(term: term, command: line)
     }
 
     private func shellQuote(_ value: String) -> String {
@@ -3765,8 +3851,28 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func collectRecentModels() -> [String] {
+        prefetchRecentModels()
+        return sessionModelsCache
+    }
+
+    private func prefetchRecentModels() {
         let now = Date().timeIntervalSince1970
-        if now - sessionModelsCacheAt < 60 { return sessionModelsCache }
+        guard !sessionModelsRefreshing, now - sessionModelsCacheAt >= 60 else { return }
+        sessionModelsRefreshing = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let models = Self.scanRecentModels()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.sessionModelsRefreshing = false
+                guard !models.isEmpty else { return }
+                self.sessionModelsCache = models
+                self.sessionModelsCacheAt = Date().timeIntervalSince1970
+            }
+        }
+    }
+
+    private static func scanRecentModels() -> [String] {
+        let now = Date().timeIntervalSince1970
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
         var files: [(URL, Double)] = []
@@ -3785,7 +3891,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         files.sort { $0.1 > $1.1 }
         guard let pattern = try? NSRegularExpression(pattern: "\"model\"\\s*:\\s*\"([^\"]+)\"") else {
-            return sessionModelsCache
+            return []
         }
         var models: [String] = []
         func absorb(_ text: String, reversed: Bool) -> Bool {
@@ -3803,14 +3909,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         for (url, _) in files.prefix(40) {
             if absorb(readTail(url, bytes: 96 * 1024), reversed: true) { break }
-            if absorb(readHead(url, bytes: 96 * 1024), reversed: false) { break }
+            if absorb(Self.readHead(url, bytes: 96 * 1024), reversed: false) { break }
         }
-        sessionModelsCache = models
-        sessionModelsCacheAt = now
         return models
     }
 
-    private func readHead(_ url: URL, bytes: Int) -> String {
+    private static func readHead(_ url: URL, bytes: Int) -> String {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
         defer { try? handle.close() }
         let data = (try? handle.read(upToCount: bytes)) ?? Data()
