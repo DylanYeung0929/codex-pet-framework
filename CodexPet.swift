@@ -3708,6 +3708,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         )
         idleItem.target = self
         menu.addItem(idleItem)
+
+        let hideItem = NSMenuItem(
+            title: "隐藏宠物",
+            action: #selector(menuHidePet),
+            keyEquivalent: ""
+        )
+        hideItem.target = self
+        menu.addItem(hideItem)
         menu.addItem(.separator())
 
         let animationItem = NSMenuItem(title: "动画", action: nil, keyEquivalent: "")
@@ -4272,6 +4280,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     @objc private func menuIdle() {
         overrideUntil = 0
         applyMotion(index: idleIndex, loop: true)
+    }
+
+    @objc private func menuHidePet() {
+        togglePetVisible()
     }
 
     @objc private func menuMotion(_ sender: NSMenuItem) {
