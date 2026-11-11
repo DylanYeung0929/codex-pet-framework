@@ -5139,13 +5139,17 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             end if
         end tell
         """
+        runTerminalScript(script)
+    }
+
+    private func runTerminalScript(_ script: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
         process.terminationHandler = { [weak self] proc in
             DispatchQueue.main.async {
                 guard proc.terminationStatus != 0 else { return }
-                self?.triggerAlert("无法在终端启动会话，请检查自动化权限", silent: true, duration: 4)
+                self?.triggerAlert("无法打开终端，请检查自动化权限", silent: true, duration: 4)
             }
         }
         try? process.run()
@@ -5172,10 +5176,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             end tell
             """
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-        try? process.run()
+        runTerminalScript(script)
     }
 
     private func collectRecentModels() -> [String] {
