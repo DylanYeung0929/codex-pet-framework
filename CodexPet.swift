@@ -753,6 +753,8 @@ private final class BubbleView: NSView {
         var detail: String?
         var mono: Bool
         var rows: [Row] = []
+        var time: String? = nil
+        var titleColor: NSColor? = nil
     }
 
     private let label = NSTextField(wrappingLabelWithString: "")
@@ -863,8 +865,14 @@ private final class BubbleView: NSView {
         }
         text.append(NSAttributedString(string: content.title, attributes: [
             .font: BubbleView.titleFont,
-            .foregroundColor: NSColor.white.withAlphaComponent(0.97),
+            .foregroundColor: content.titleColor ?? NSColor.white.withAlphaComponent(0.97),
         ]))
+        if let time = content.time, !time.isEmpty {
+            text.append(NSAttributedString(string: "  " + time, attributes: [
+                .font: BubbleView.monoFont,
+                .foregroundColor: NSColor.white.withAlphaComponent(0.6),
+            ]))
+        }
         if let detail = content.detail, !detail.isEmpty {
             text.append(NSAttributedString(string: "\n" + detail, attributes: [
                 .font: content.mono ? BubbleView.monoFont : BubbleView.detailFont,
@@ -2283,7 +2291,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     private func bubbleContent() -> BubbleView.Content? {
         if CACurrentMediaTime() < alertUntil, let alertText {
-            return BubbleView.Content(prefix: "⚠", title: alertText, detail: nil, mono: false)
+            return BubbleView.Content(
+                prefix: "⚠",
+                title: alertText,
+                detail: nil,
+                mono: false,
+                titleColor: NSColor(srgbRed: 1.0, green: 0.72, blue: 0.32, alpha: 1)
+            )
         }
         let narration = lastAssistantText.isEmpty ? nil : "⏺ " + headSnippet(lastAssistantText, 220)
         if !hovered, sessions.count >= 2 {
@@ -2318,31 +2332,35 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             sessions.first(where: { $0.id == id })
         }
         let prefix = primarySession.map { "[" + shortName(displayName($0), limit: 14) + "]" }
-        let elapsedSuffix = primarySession
-            .flatMap { turnElapsedLabel(for: $0) }
-            .map { " · 已运行 " + $0 } ?? ""
+        let elapsed = primarySession.flatMap { turnElapsedLabel(for: $0) }
         switch currentState {
         case "thinking":
             return BubbleView.Content(
                 prefix: prefix,
-                title: "思考中" + elapsedSuffix,
+                title: "思考中",
                 detail: narration ?? (lastThinking.isEmpty ? nil : tailSnippet(lastThinking, 200)),
-                mono: false
+                mono: false,
+                time: elapsed,
+                titleColor: stateColor(currentState)
             )
         case "bash", "search", "tool":
             let name = statusTool.isEmpty ? "工具" : statusTool
             return BubbleView.Content(
                 prefix: prefix,
-                title: "正在运行 " + name + elapsedSuffix,
+                title: "正在运行 " + name,
                 detail: narration,
-                mono: false
+                mono: false,
+                time: elapsed,
+                titleColor: stateColor(currentState)
             )
         case "waiting":
             return BubbleView.Content(
                 prefix: prefix,
-                title: "等待你的操作" + elapsedSuffix,
+                title: "等待你的操作",
                 detail: statusMessage.isEmpty ? nil : statusMessage,
-                mono: false
+                mono: false,
+                time: elapsed,
+                titleColor: stateColor(currentState)
             )
         case "failed":
             let suffix = statusTool.isEmpty ? "" : " · " + statusTool
@@ -2350,13 +2368,20 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 prefix: prefix,
                 title: "工具执行失败" + suffix,
                 detail: statusMessage.isEmpty ? nil : statusMessage,
-                mono: false
+                mono: false,
+                titleColor: stateColor(currentState)
             )
         case "done":
             guard CACurrentMediaTime() < doneBubbleUntil else { return nil }
             let duration = primaryID.flatMap { turnDurationBySession[$0] }
             let title = duration.map { "完成 · 用时 " + formatDuration($0) } ?? "完成"
-            return BubbleView.Content(prefix: prefix, title: title, detail: narration, mono: false)
+            return BubbleView.Content(
+                prefix: prefix,
+                title: title,
+                detail: narration,
+                mono: false,
+                titleColor: stateColor(currentState)
+            )
         default:
             return nil
         }
@@ -2431,7 +2456,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 percent = "\(Int((Double(used) / Double(max(contextWindow, 1)) * 100).rounded()))%"
                 usage = " · \(formatTokens(used)) / \(formatTokens(contextWindow))"
             }
-            text.append(NSAttributedString(string: "对话长度 ", attributes: [
+            text.append(NSAttributedString(string: "上下文 ", attributes: [
                 .font: stateFont, .foregroundColor: body,
             ]))
             text.append(NSAttributedString(string: percent, attributes: [
