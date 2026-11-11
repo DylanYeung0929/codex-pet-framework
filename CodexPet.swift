@@ -4450,19 +4450,34 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         return pid
     }
 
+    private func isClaudeProcess(_ entry: ProcessEntry) -> Bool {
+        if (entry.comm as NSString).lastPathComponent == "claude" { return true }
+        let args = entry.args
+        return args == "claude"
+            || args.hasPrefix("claude ")
+            || args.contains("/claude ")
+            || args.hasSuffix("/claude")
+    }
+
+    // claude runs inside the wrapper's restart-loop subshell, so it is a
+    // grandchild of the shell PID rather than a direct child.
     private func claudeProcess(forPetID petID: String, entries: [ProcessEntry]? = nil) -> ProcessEntry? {
         guard let shell = wrapperShellPID(petID) else { return nil }
-        let children = (entries ?? processEntries()).filter { $0.ppid == shell }
-        if let named = children.first(where: { ($0.comm as NSString).lastPathComponent == "claude" }) {
-            return named
+        let all = entries ?? processEntries()
+        var level: [Int32] = [shell]
+        var seen: Set<Int32> = [shell]
+        for _ in 0..<4 {
+            var next: [Int32] = []
+            for parent in level {
+                for child in all where child.ppid == parent && seen.insert(child.pid).inserted {
+                    if isClaudeProcess(child) { return child }
+                    next.append(child.pid)
+                }
+            }
+            if next.isEmpty { return nil }
+            level = next
         }
-        return children.first { child in
-            let args = child.args
-            return args == "claude"
-                || args.hasPrefix("claude ")
-                || args.contains("/claude ")
-                || args.hasSuffix("/claude")
-        }
+        return nil
     }
 
     private func canAutoRestart(_ petID: String) -> Bool {
