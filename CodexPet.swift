@@ -1155,6 +1155,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var savedCenterX: CGFloat?
     private var savedBottomY: CGFloat?
     private var positioned = false
+    private static let defaultCenterX: CGFloat = 115
+    private static let defaultBottomY: CGFloat = 49
 
     private var currentState = "idle"
     private var statusTool = ""
@@ -1482,9 +1484,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             anchorX = cx
             bottom = by
         } else {
-            let vf = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-            anchorX = vf.maxX - size.width / 2 - 28
-            bottom = vf.minY + 24
+            anchorX = Self.defaultCenterX
+            bottom = Self.defaultBottomY
         }
         positioned = true
 
