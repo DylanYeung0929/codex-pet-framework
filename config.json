@@ -1,4 +1,5 @@
 {
   "contextWindow": 200000,
-  "balanceAlert": 5
+  "balanceAlert": 5,
+  "toolTimeout": 10
 }

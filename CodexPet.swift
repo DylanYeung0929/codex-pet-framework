@@ -57,6 +57,7 @@ private struct PetState: Codable {
     var soundFailed: String?
     var soundWaiting: String?
     var soundBalance: String?
+    var soundTool: String?
     var soundVolume: Double?
     var motionMap: [String: String]?
     var dnd: Bool?
@@ -65,6 +66,7 @@ private struct PetState: Codable {
     var idleOpacity: Double?
     var pinnedSession: String?
     var effortBySession: [String: String]? = nil
+    var mutedSessions: [String]? = nil
 }
 
 private struct PetDayRecord: Codable {
@@ -159,6 +161,7 @@ private let stateMotionGroups: [(key: String, title: String, rep: String)] = [
 private struct PetConfig: Decodable {
     var contextWindow: Int?
     var balanceAlert: Double?
+    var toolTimeout: Double?
 }
 
 private struct PetStatus: Decodable {
@@ -1124,6 +1127,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var idleOpacity: CGFloat = 0.6
     private var balanceAlertThreshold = 5.0
     private var balanceLow = false
+    private var mutedSessions = Set<String>()
+    private var toolTimeout: Double = 600
+    private var toolRunStart: [String: Double] = [:]
+    private var toolRunAlerted = Set<String>()
     private var turnStartBySession: [String: Double] = [:]
     private var turnDurationBySession: [String: Double] = [:]
     private var alertText: String?
@@ -1192,6 +1199,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var soundFailed = "Basso"
     private var soundWaiting = "Ping"
     private var soundBalance = "Ping"
+    private var soundTool = "Submarine"
     private var soundVolume: Double = 1.0
     private var currentOnly = false
     private var frontTTY: String?
@@ -1315,12 +1323,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if let value = state.soundFailed, alertSounds.contains(where: { $0.id == value }) { soundFailed = value }
             if let value = state.soundWaiting, alertSounds.contains(where: { $0.id == value }) { soundWaiting = value }
             if let value = state.soundBalance, alertSounds.contains(where: { $0.id == value }) { soundBalance = value }
+            if let value = state.soundTool, alertSounds.contains(where: { $0.id == value }) { soundTool = value }
             if let value = state.soundVolume { soundVolume = min(max(value, 0), 3) }
             if let value = state.fontScale { fontScale = min(max(CGFloat(value), 0.85), 1.3) }
             if let value = state.dnd { doNotDisturb = value }
             if let value = state.hotkey { hotKeyEnabled = value }
             if let value = state.idleOpacity { idleOpacity = min(max(CGFloat(value), 0.1), 1.0) }
             if let value = state.pinnedSession, !value.isEmpty { pinnedSessionID = value }
+            if let list = state.mutedSessions { mutedSessions = Set(list) }
             if let map = state.effortBySession {
                 let known = Set(effortLevels.map { $0.id })
                 for (session, level) in map where known.contains(level) {
@@ -1346,6 +1356,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
            let config = try? JSONDecoder().decode(PetConfig.self, from: data) {
             if let window = config.contextWindow, window >= 1000 { contextWindow = window }
             if let value = config.balanceAlert, value >= 0 { balanceAlertThreshold = value }
+            if let value = config.toolTimeout, value >= 0 { toolTimeout = value * 60 }
         }
         if let raw = argValue("--context-window"), let value = Int(raw), value >= 1000 {
             contextWindow = value
@@ -1879,6 +1890,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         let hadSessions = !sessions.isEmpty
         sessions = loaded
+        trackToolTimeouts(loaded)
         updateAlertDot()
         guard let primary = sessions.first else {
             primaryID = nil
@@ -2177,7 +2189,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         if newState == "done" {
             doneBubbleUntil = CACurrentMediaTime() + 4.5
         }
-        if soundEnabled && !doNotDisturb {
+        if soundEnabled && !doNotDisturb && !primarySessionMuted() {
             switch newState {
             case "done": playSound(soundDone)
             case "failed": playSound(soundFailed)
@@ -2187,6 +2199,49 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         followStateMotion()
         updateIdleOpacity()
+    }
+
+    private func sessionIsMuted(_ session: Session) -> Bool {
+        if let rid = session.resumeID { return mutedSessions.contains(rid) }
+        return mutedSessions.contains(session.id)
+    }
+
+    private func primarySessionMuted() -> Bool {
+        guard let id = primaryID,
+              let session = sessions.first(where: { $0.id == id }) else { return false }
+        return sessionIsMuted(session)
+    }
+
+    private func trackToolTimeouts(_ loaded: [Session]) {
+        let now = Date().timeIntervalSince1970
+        let toolStates: Set<String> = ["bash", "search", "tool"]
+        let activeIDs = Set(loaded.filter { toolStates.contains($0.state) }.map { $0.id })
+        toolRunStart = toolRunStart.filter { activeIDs.contains($0.key) }
+        toolRunAlerted = toolRunAlerted.filter { activeIDs.contains($0) }
+        guard toolTimeout > 0 else { return }
+        for session in loaded where toolStates.contains(session.state) {
+            let start: Double
+            if session.ts > 0 {
+                start = session.ts
+            } else if let existing = toolRunStart[session.id] {
+                start = existing
+            } else {
+                start = now
+            }
+            if toolRunStart[session.id] != start {
+                toolRunStart[session.id] = start
+                toolRunAlerted.remove(session.id)
+            }
+            guard now - start >= toolTimeout, !toolRunAlerted.contains(session.id) else { continue }
+            toolRunAlerted.insert(session.id)
+            let minutes = max(Int((now - start) / 60), 1)
+            let name = shortName(displayName(session), limit: 12)
+            if sessionIsMuted(session) {
+                triggerAlert("「\(name)」工具已运行 \(minutes) 分钟", silent: true)
+            } else {
+                triggerAlert("「\(name)」工具已运行 \(minutes) 分钟", sound: soundTool)
+            }
+        }
     }
 
     private func motionKey(for state: String) -> String {
@@ -3739,6 +3794,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             soundFailed: soundFailed,
             soundWaiting: soundWaiting,
             soundBalance: soundBalance,
+            soundTool: soundTool,
             soundVolume: soundVolume,
             motionMap: motionMap.isEmpty ? nil : motionMap,
             dnd: doNotDisturb,
@@ -3746,7 +3802,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             hotkey: hotKeyEnabled,
             idleOpacity: Double(idleOpacity),
             pinnedSession: pinnedSessionID,
-            effortBySession: effortBySession.isEmpty ? nil : effortBySession
+            effortBySession: effortBySession.isEmpty ? nil : effortBySession,
+            mutedSessions: mutedSessions.isEmpty ? nil : mutedSessions.sorted()
         )
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: stateURL, options: .atomic)
@@ -3846,6 +3903,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let sessionsItem = NSMenuItem(title: "会话", action: nil, keyEquivalent: "")
         let sessionsMenu = NSMenu()
         menuSessionIDs = sessions.map { $0.id }
+        let newSessionItem = NSMenuItem(
+            title: "新建会话…",
+            action: #selector(menuNewSession),
+            keyEquivalent: ""
+        )
+        newSessionItem.target = self
+        sessionsMenu.addItem(newSessionItem)
+        sessionsMenu.addItem(.separator())
         if sessions.isEmpty {
             let emptyItem = NSMenuItem(title: "无活跃会话", action: nil, keyEquivalent: "")
             emptyItem.isEnabled = false
@@ -3965,6 +4030,17 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 pin.isEnabled = session.resumeID != nil
                 if let rid = session.resumeID, rid == pinnedSessionID { pin.state = .on }
                 sub.addItem(pin)
+                let mute = NSMenuItem(
+                    title: "静音提醒",
+                    action: #selector(menuToggleSessionMute(_:)),
+                    keyEquivalent: ""
+                )
+                mute.tag = i
+                mute.target = self
+                mute.isEnabled = session.resumeID != nil
+                mute.toolTip = "只关闭该会话的提示音，右上角红点照常"
+                if sessionIsMuted(session) { mute.state = .on }
+                sub.addItem(mute)
                 sub.addItem(.separator())
                 let resume = NSMenuItem(
                     title: "默认模型",
@@ -4195,6 +4271,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             ("失败", #selector(menuSoundFailed(_:)), soundFailed),
             ("等待回复", #selector(menuSoundWaiting(_:)), soundWaiting),
             ("余额不足", #selector(menuSoundBalance(_:)), soundBalance),
+            ("工具超时", #selector(menuSoundTool(_:)), soundTool),
         ]
         for (title, action, selected) in soundChoices {
             let targetItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -4484,6 +4561,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         saveState()
     }
 
+    @objc private func menuSoundTool(_ sender: NSMenuItem) {
+        guard alertSounds.indices.contains(sender.tag) else { return }
+        soundTool = alertSounds[sender.tag].id
+        playSound(soundTool)
+        saveState()
+    }
+
     @objc private func menuSoundVolume(_ sender: NSMenuItem) {
         soundVolume = min(max(Double(sender.tag) / 100.0, 0), 3)
         playSound(soundDone)
@@ -4577,6 +4661,21 @@ private final class PetApp: NSObject, NSApplicationDelegate {
               !session.cwd.isEmpty
         else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd))
+    }
+
+    @objc private func menuToggleSessionMute(_ sender: NSMenuItem) {
+        guard menuSessionIDs.indices.contains(sender.tag),
+              let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] }),
+              let rid = session.resumeID
+        else { return }
+        if mutedSessions.contains(rid) {
+            mutedSessions.remove(rid)
+            triggerAlert("已取消静音 " + displayName(session), silent: true, duration: 2.5)
+        } else {
+            mutedSessions.insert(rid)
+            triggerAlert("已静音 " + displayName(session) + " 的提醒", silent: true, duration: 2.5)
+        }
+        saveState()
     }
 
     @objc private func menuToggleSessionReview(_ sender: NSMenuItem) {
@@ -4952,6 +5051,48 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     private func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    @objc private func menuNewSession() {
+        let picker = NSOpenPanel()
+        picker.canChooseFiles = false
+        picker.canChooseDirectories = true
+        picker.canCreateDirectories = true
+        picker.allowsMultipleSelection = false
+        picker.prompt = "在此启动"
+        picker.message = "选择新 Claude 会话的工作目录"
+        if let cwd = sessions.first(where: { $0.id == primaryID })?.cwd, !cwd.isEmpty {
+            picker.directoryURL = URL(fileURLWithPath: cwd)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        guard picker.runModal() == .OK, let url = picker.url else { return }
+        let command = "cd " + shellQuote(url.path) + " && claude"
+        let term = frontmostTerminalHint() ?? runningTerminalHint() ?? "Apple_Terminal"
+        openTerminalTab(term: term, command: command)
+    }
+
+    private func openTerminalTab(term: String, command: String) {
+        if term == "iTerm.app" {
+            openTerminalWindow(term: term, command: command)
+            return
+        }
+        let escaped = command
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "Terminal"
+            activate
+            if (count of windows) > 0 then
+                do script "\(escaped)" in front window
+            else
+                do script "\(escaped)"
+            end if
+        end tell
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        try? process.run()
     }
 
     private func openTerminalWindow(term: String, command: String) {
