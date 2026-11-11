@@ -49,7 +49,7 @@ stop() {
   for _ in {1..25}; do
     sleep 0.1
     if ! running_pid >/dev/null; then
-      rm -f "$RUN_DIR/pet.hidden" "$RUN_DIR/pet.show"
+      rm -f "$RUN_DIR/pet.hidden" "$RUN_DIR/pet.show" "$RUN_DIR/pet.hide"
       say "已停止（pid $pid）"
       return 0
     fi
@@ -73,6 +73,34 @@ show() {
   die "宠物未响应显示请求，请尝试 restart"
 }
 
+hide() {
+  local pid
+  if ! pid="$(running_pid)"; then
+    die "未运行，请先运行 petctl.sh start"
+  fi
+  : > "$RUN_DIR/pet.hide"
+  for _ in {1..20}; do
+    sleep 0.1
+    if [[ -e "$RUN_DIR/pet.hidden" ]]; then
+      say "已隐藏（pid $pid），可用 petctl.sh show 恢复"
+      return 0
+    fi
+  done
+  die "宠物未响应隐藏请求，请尝试 restart"
+}
+
+toggle() {
+  local pid
+  if ! pid="$(running_pid)"; then
+    die "未运行，请先运行 petctl.sh start"
+  fi
+  if [[ -e "$RUN_DIR/pet.hidden" ]]; then
+    show
+  else
+    hide
+  fi
+}
+
 status() {
   local pid
   if pid="$(running_pid)"; then
@@ -93,9 +121,11 @@ case "${1:-status}" in
   stop) stop ;;
   restart) stop; start ;;
   show) show ;;
+  hide) hide ;;
+  toggle) toggle ;;
   status) status ;;
   *)
-    say "用法：$0 {start|stop|restart|show|status}"
+    say "用法：$0 {start|stop|restart|show|hide|toggle|status}"
     exit 1
     ;;
 esac

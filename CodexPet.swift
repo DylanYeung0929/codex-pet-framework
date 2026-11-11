@@ -16,6 +16,7 @@ private let runDir = petRoot.appendingPathComponent("run")
 private let configURL = petRoot.appendingPathComponent("config.json")
 private let reviewOffURL = petRoot.appendingPathComponent("review_off.txt")
 private let showFlagURL = runDir.appendingPathComponent("pet.show")
+private let hideFlagURL = runDir.appendingPathComponent("pet.hide")
 private let hiddenFlagURL = runDir.appendingPathComponent("pet.hidden")
 
 private struct MotionSpec: Decodable {
@@ -1280,6 +1281,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             object: nil
         )
         try? FileManager.default.removeItem(at: showFlagURL)
+        try? FileManager.default.removeItem(at: hideFlagURL)
         try? FileManager.default.removeItem(at: hiddenFlagURL)
         applyMotion(index: index, loop: loop)
         startTimers()
@@ -1838,6 +1840,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         if FileManager.default.fileExists(atPath: showFlagURL.path) {
             try? FileManager.default.removeItem(at: showFlagURL)
             if petHidden { togglePetVisible() }
+        }
+        if FileManager.default.fileExists(atPath: hideFlagURL.path) {
+            try? FileManager.default.removeItem(at: hideFlagURL)
+            if !petHidden { togglePetVisible() }
         }
         syncHoverFromPointer()
         var loaded = loadSessions()
@@ -3645,9 +3651,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             effortOffsetY = nil
             effortPanel?.orderOut(nil)
             panel?.orderOut(nil)
+            frameTimer?.invalidate()
+            frameTimer = nil
         } else {
             try? FileManager.default.removeItem(at: hiddenFlagURL)
             try? FileManager.default.removeItem(at: showFlagURL)
+            try? FileManager.default.removeItem(at: hideFlagURL)
+            startFrameTimer(interval: frameInterval)
             panel?.orderFrontRegardless()
             refreshTitles()
             updateBubble()
@@ -3872,6 +3882,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 focus.target = self
                 focus.isEnabled = session.tty != nil
                 sub.addItem(focus)
+                let openFolder = NSMenuItem(
+                    title: "在 Finder 中打开目录",
+                    action: #selector(menuOpenSessionFolder(_:)),
+                    keyEquivalent: ""
+                )
+                openFolder.tag = i
+                openFolder.target = self
+                openFolder.isEnabled = !session.cwd.isEmpty
+                sub.addItem(openFolder)
                 let copyID = NSMenuItem(
                     title: "复制会话 UUID",
                     action: #selector(menuCopySessionID(_:)),
@@ -4525,6 +4544,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     @objc private func menuFocusSession(_ sender: NSMenuItem) {
         guard menuSessionIDs.indices.contains(sender.tag) else { return }
         focusTerminal(id: menuSessionIDs[sender.tag])
+    }
+
+    @objc private func menuOpenSessionFolder(_ sender: NSMenuItem) {
+        guard menuSessionIDs.indices.contains(sender.tag),
+              let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] }),
+              !session.cwd.isEmpty
+        else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd))
     }
 
     @objc private func menuToggleSessionReview(_ sender: NSMenuItem) {

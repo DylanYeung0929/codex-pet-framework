@@ -16,7 +16,7 @@ cd ~/.claude/pet
 安装脚本会构建 `bin/CodexPet`、合并 `~/.claude/settings.json` 的 hooks、向 `~/.zshrc` 写入带标记的 `claude()` 包装函数。完成后新开终端运行 `claude` 即可。
 
 - 自定义位置：`CODEX_PET_DIR=~/somewhere ./install.sh`（安装器会把该路径写进 zshrc）
-- 启停：`~/.claude/pet/petctl.sh start|stop|restart|show|status`（`show` 把隐藏的宠物重新显示出来）
+- 启停：`~/.claude/pet/petctl.sh start|stop|restart|show|hide|toggle|status`（`hide` 隐藏并暂停动画省电，`show` 恢复显示，`toggle` 在两者间切换）
 - 卸载：`~/.claude/pet/uninstall.sh`，加 `--purge` 一并删除统计与窗口状态
 - 临时禁用（不卸载）：`export CODEX_PET_DISABLED=1`
 
@@ -52,6 +52,7 @@ cd ~/.claude/pet
 - **历史统计**：按天归档完成数、失败数、活跃时长与 tokens，保留 30 天；今日统计卡附 7 天走势，右键「近 7 天统计」可查看逐日完成 / 失败 / tokens 列表卡。
 - **互动**：双击宠物随机播放欢呼动作；⌥⌘P 全局显示 / 隐藏宠物，可在右键菜单关闭该快捷键；注册失败时自动关闭并在菜单标注；右键「隐藏宠物」可直接隐藏浮窗。
 - **交互**：左键点击按 tty 聚焦对应终端标签；拖动时按水平方向播放左右骑行动画；右键菜单调节大小、字号、动画速度、显示项、锁定位置等。
+- **隐藏与省电**：隐藏宠物后动画帧定时器停止，仅保留 0.3s 状态轮询；`petctl.sh hide|toggle` 与菜单、⌥⌘P 共用同一套隐藏状态，`show` 恢复后动画继续。
 - **单例**：通过 `run/pet.pid` 锁保证只有一个宠物进程；所有会话消失前挥手告别，8 秒后自动退出。
 
 ### 右键菜单
@@ -76,6 +77,7 @@ cd ~/.claude/pet
 
 - **上下文**：显示该会话当前上下文占用百分比与 used / window，下一行显示所用模型与本轮已运行时长（完成后改为上一轮用时）。
 - **聚焦终端**：按 tty 选中对应的 Terminal 或 iTerm2 标签页。
+- **在 Finder 中打开目录**：直接打开该会话的工作目录，便于查看文件。
 - **复制会话 UUID**：把该会话的 resume UUID 写入剪贴板。
 - **复制恢复命令**：按所选模型生成 `cd <目录> && claude --resume <UUID> [--model …]` 并写入剪贴板；该会话已关闭个人审查时附带 `--dangerously-skip-permissions`。
 - **置顶会话**：把该会话固定在其他会话之前展示，状态为空闲或完成时不抢占优先级；选择持久化，再次点击取消。
@@ -170,13 +172,13 @@ source ~/.claude/pet/pet_wrapper.zsh
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `contextWindow` | 1000000 | 上下文百分比的分母，需与模型实际窗口一致（如 DeepSeek Flash 为 1M） |
+| `contextWindow` | 200000 | 上下文百分比的分母。Claude Code 对未识别模型按 200k 压缩，建议保持一致 |
 | `balanceAlert` | 5 | 余额低于该值（元）提醒一次 |
 | `contextAlert` | 0.8 | 上下文占用达到该比例提醒一次 |
 
 余额接口：读取 `~/.claude/settings.json` 里 env 的 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`，host 含 `deepseek` 时请求 `/user/balance`，60 秒缓存。
 
-使用非 Anthropic 模型时，还需在 `~/.claude/settings.json` 的 `env` 中设置 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`（如 DeepSeek Flash 为 `"1000000"`），否则 Claude Code 会对未识别模型按 200k 计算并过早自动压缩；修改后需新开会话生效。
+Claude Code 2.1.x 只有在同时设置 `DISABLE_COMPACT` 时才读取 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`，否则未识别模型一律按 200k 计算，并在约 180k 时自动压缩。因此 `contextWindow` 应与 200k 对齐，宠物百分比才和真实压缩进度一致。若确认供应商支持更大窗口并愿意自行管理压缩，可同时设置 `DISABLE_COMPACT=1` 与 `CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000`，并把 `contextWindow` 改为相同值；关闭自动压缩后超出窗口会直接报错。
 
 其他状态（窗口位置、大小、速度、动画映射、音效、显示开关）保存在 `window.json`，运行数据在 `run/`、`stats.json`，均不入库。
 
