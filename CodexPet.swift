@@ -61,6 +61,7 @@ private struct PetState: Codable {
     var hotkey: Bool?
     var idleOpacity: Double?
     var pinnedSession: String?
+    var effortBySession: [String: String]? = nil
 }
 
 private struct PetDayRecord: Codable {
@@ -217,6 +218,65 @@ private func stateLabel(_ state: String) -> String {
     case "failed": return "失败"
     default: return "空闲"
     }
+}
+
+private let effortLevels: [(id: String, label: String)] = [
+    ("low", "低"),
+    ("medium", "中"),
+    ("high", "高"),
+    ("xhigh", "超高"),
+    ("max", "最高"),
+]
+
+private func effortLabel(_ id: String) -> String {
+    effortLevels.first(where: { $0.id == id })?.label ?? id
+}
+
+private func effortIndex(_ id: String) -> Int? {
+    effortLevels.firstIndex(where: { $0.id == id })
+}
+
+private struct ProcessEntry {
+    let pid: Int32
+    let ppid: Int32
+    let comm: String
+    let args: String
+}
+
+private func processEntries() -> [ProcessEntry] {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/ps")
+    process.arguments = ["-axo", "pid=,ppid=,comm=,args="]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    do {
+        try process.run()
+    } catch {
+        return []
+    }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return String(decoding: data, as: UTF8.self).split(separator: "\n").compactMap { line in
+        let fields = line.split(maxSplits: 3, omittingEmptySubsequences: true) {
+            $0 == " " || $0 == "\t"
+        }
+        guard fields.count >= 3,
+              let pid = Int32(fields[0]),
+              let ppid = Int32(fields[1]) else { return nil }
+        let comm = String(fields[2])
+        let args = fields.count > 3 ? String(fields[3]) : comm
+        return ProcessEntry(pid: pid, ppid: ppid, comm: comm, args: args)
+    }
+}
+
+private func effortArgument(_ args: String) -> String? {
+    let tokens = args.split(separator: " ").map(String.init)
+    for (i, token) in tokens.enumerated() {
+        if token == "--effort", i + 1 < tokens.count { return tokens[i + 1] }
+        if token.hasPrefix("--effort=") { return String(token.dropFirst("--effort=".count)) }
+    }
+    return nil
 }
 
 private func processName(_ pid: Int32) -> String? {
@@ -451,6 +511,180 @@ private final class PetView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         onMenu?(event)
+    }
+}
+
+private final class EffortSlider: NSSlider {
+    var onCommit: ((Double) -> Void)?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // NSSlider tracks the whole drag inside mouseDown and consumes the mouse-up,
+    // so commit only after the tracking loop returns.
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        onCommit?(doubleValue)
+    }
+}
+
+private final class EffortCardView: NSView {
+    var onCommit: ((Double) -> Void)?
+    var onCancel: (() -> Void)?
+
+    private let titleLabel = NSTextField(labelWithString: "思考力度")
+    private let valueLabel = NSTextField(labelWithString: "高")
+    private let hintLabel = NSTextField(labelWithString: "松开滑块后立即发送 /effort，无需重启")
+    private let slider = EffortSlider()
+    private let closeButton = NSButton()
+    private let container = NSView()
+    private var glassView: NSView?
+    private var hPad: CGFloat { 16 * BubbleView.scale }
+    private var vPad: CGFloat { 12 * BubbleView.scale }
+    private var cornerRadius: CGFloat { min(14 * BubbleView.scale, bounds.height / 2) }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        container.wantsLayer = true
+
+        titleLabel.font = NSFont.systemFont(ofSize: 12.5 * BubbleView.scale, weight: .semibold)
+        titleLabel.textColor = NSColor.white.withAlphaComponent(0.95)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12 * BubbleView.scale, weight: .semibold)
+        valueLabel.textColor = NSColor(srgbRed: 0.52, green: 0.76, blue: 1.0, alpha: 1)
+        valueLabel.alignment = .right
+        hintLabel.font = NSFont.systemFont(ofSize: 10 * BubbleView.scale)
+        hintLabel.textColor = NSColor.white.withAlphaComponent(0.55)
+        hintLabel.lineBreakMode = .byTruncatingTail
+
+        slider.minValue = 0
+        slider.maxValue = Double(effortLevels.count - 1)
+        slider.numberOfTickMarks = effortLevels.count
+        slider.allowsTickMarkValuesOnly = true
+        slider.tickMarkPosition = .below
+        slider.isContinuous = true
+        slider.controlSize = .small
+        slider.target = self
+        slider.action = #selector(sliderMoved)
+        slider.onCommit = { [weak self] value in self?.commit(value) }
+
+        closeButton.isBordered = false
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "关闭")
+        closeButton.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: 9 * BubbleView.scale, weight: .semibold)
+        closeButton.contentTintColor = NSColor.white.withAlphaComponent(0.55)
+        closeButton.target = self
+        closeButton.action = #selector(cancel)
+
+        container.addSubview(titleLabel)
+        container.addSubview(valueLabel)
+        container.addSubview(slider)
+        container.addSubview(hintLabel)
+        container.addSubview(closeButton)
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.style = .clear
+            glass.tintColor = NSColor(srgbRed: 0.01, green: 0.02, blue: 0.04, alpha: 0.3)
+            glass.contentView = container
+            addSubview(glass)
+            glassView = glass
+        } else {
+            addSubview(container)
+        }
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not used")
+    }
+
+    override func layout() {
+        super.layout()
+        glassView?.frame = bounds
+        if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
+            glass.cornerRadius = cornerRadius
+            container.layer?.backgroundColor = NSColor(srgbRed: 0.01, green: 0.02, blue: 0.04, alpha: 0.55).cgColor
+            container.layer?.cornerRadius = cornerRadius
+            container.layer?.cornerCurve = .continuous
+            container.layer?.masksToBounds = true
+        }
+        container.frame = bounds
+        let scale = BubbleView.scale
+        let valueWidth = 112 * scale
+        let closeSize = 14 * scale
+        titleLabel.frame = NSRect(
+            x: hPad,
+            y: bounds.height - vPad - 18 * scale,
+            width: max(0, bounds.width - hPad * 2 - valueWidth - closeSize - 20 * scale),
+            height: 18 * scale
+        )
+        valueLabel.frame = NSRect(
+            x: bounds.width - hPad - closeSize - 8 * scale - valueWidth,
+            y: bounds.height - vPad - 18 * scale,
+            width: valueWidth,
+            height: 18 * scale
+        )
+        closeButton.frame = NSRect(
+            x: bounds.width - hPad - closeSize,
+            y: bounds.height - vPad - 16 * scale,
+            width: closeSize,
+            height: closeSize
+        )
+        hintLabel.frame = NSRect(
+            x: hPad,
+            y: vPad - 2 * scale,
+            width: max(0, bounds.width - hPad * 2),
+            height: 13 * scale
+        )
+        slider.frame = NSRect(
+            x: hPad,
+            y: hintLabel.frame.maxY + 3 * scale,
+            width: max(0, bounds.width - hPad * 2),
+            height: 27 * scale
+        )
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard glassView == nil else { return }
+        let path = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+            xRadius: cornerRadius,
+            yRadius: cornerRadius
+        )
+        NSColor(srgbRed: 0.10, green: 0.11, blue: 0.13, alpha: 0.94).setFill()
+        path.fill()
+        NSColor.white.withAlphaComponent(0.12).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+
+    func cardSize() -> NSSize {
+        NSSize(width: 292 * BubbleView.scale, height: 96 * BubbleView.scale)
+    }
+
+    func configure(name: String, level: String) {
+        titleLabel.stringValue = "思考力度 · " + name
+        let index = effortIndex(level) ?? (effortIndex("high") ?? 2)
+        slider.doubleValue = Double(index)
+        updateValueLabel()
+        needsLayout = true
+    }
+
+    @objc private func sliderMoved() {
+        updateValueLabel()
+    }
+
+    private func updateValueLabel() {
+        let index = max(0, min(Int(slider.doubleValue.rounded()), effortLevels.count - 1))
+        valueLabel.stringValue = effortLevels[index].label + " · " + effortLevels[index].id
+    }
+
+    private func commit(_ value: Double) {
+        let index = max(0, min(Int(value.rounded()), effortLevels.count - 1))
+        onCommit?(Double(index))
+    }
+
+    @objc private func cancel() {
+        onCancel?()
     }
 }
 
@@ -785,6 +1019,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var badgeView: BadgeView!
     private var statsPanel: PetPanel!
     private var statsView: BadgeView!
+    private var effortPanel: PetPanel!
+    private var effortView: EffortCardView!
+    private var effortShown = false
+    private var effortSize = NSSize(width: 292, height: 96)
+    private var effortOffsetY: CGFloat?
+    private var effortBySession: [String: String] = [:]
     private var statsShown = false
     private enum StatsMode { case today, history }
     private var statsMode = StatsMode.today
@@ -1031,6 +1271,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if let value = state.hotkey { hotKeyEnabled = value }
             if let value = state.idleOpacity { idleOpacity = min(max(CGFloat(value), 0.1), 1.0) }
             if let value = state.pinnedSession, !value.isEmpty { pinnedSessionID = value }
+            if let map = state.effortBySession {
+                let known = Set(effortLevels.map { $0.id })
+                for (session, level) in map where known.contains(level) {
+                    effortBySession[session] = level
+                }
+            }
             if let map = state.motionMap {
                 let known = Set(stateMotionGroups.flatMap { $0.key.split(separator: ",").map(String.init) })
                 for (stateKey, motionKey) in map where known.contains(stateKey) {
@@ -1148,6 +1394,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         statsPanel.contentView = statsView
         panel.addChildWindow(statsPanel, ordered: .above)
         statsPanel.orderOut(nil)
+
+        effortPanel = makeOverlayPanel()
+        effortPanel.ignoresMouseEvents = false
+        effortView = EffortCardView(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
+        effortPanel.contentView = effortView
+        panel.addChildWindow(effortPanel, ordered: .above)
+        effortPanel.orderOut(nil)
     }
 
     private func makeOverlayPanel() -> PetPanel {
@@ -2771,7 +3024,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let busy = busyStates.contains(currentState)
             || CACurrentMediaTime() < doneBubbleUntil
             || CACurrentMediaTime() < overrideUntil
-        let dim = !busy && !hovered && !draggingPet
+        let dim = !busy && !hovered && !draggingPet && !effortShown
         idleDimmed = dim
         let target: CGFloat = dim ? idleOpacity : 1.0
         guard abs(panel.alphaValue - target) > 0.01 else { return }
@@ -2880,11 +3133,29 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         if badgeShown {
             var x = petFrame.midX - badgeSize.width / 2
             x = min(max(x, vf.minX + 6), vf.maxX - badgeSize.width - 6)
-            var y = bottom
+            let y = bottom
             if y + badgeSize.height > vf.maxY {
-                y = max(vf.minY, vf.maxY - badgeSize.height)
+                badgePanel.setFrame(
+                    NSRect(origin: NSPoint(x: x, y: max(vf.minY, vf.maxY - badgeSize.height)),
+                           size: badgeSize),
+                    display: true
+                )
+            } else {
+                badgePanel.setFrame(NSRect(origin: NSPoint(x: x, y: y), size: badgeSize), display: true)
+                bottom = y + badgeSize.height + 6
             }
-            badgePanel.setFrame(NSRect(origin: NSPoint(x: x, y: y), size: badgeSize), display: true)
+        }
+        if effortShown {
+            var x = petFrame.midX - effortSize.width / 2
+            x = min(max(x, vf.minX + 6), vf.maxX - effortSize.width - 6)
+            var y = petFrame.maxY + (effortOffsetY ?? 5)
+            if y + effortSize.height > vf.maxY {
+                y = max(vf.minY, vf.maxY - effortSize.height)
+            }
+            effortPanel.setFrame(
+                NSRect(origin: NSPoint(x: x, y: y), size: effortSize),
+                display: true
+            )
         }
     }
 
@@ -2974,20 +3245,20 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         focusTerminal(id: id)
     }
 
-    private func focusTerminal(id: String) {
-        var term = "Apple_Terminal"
-        var tty = ""
+    private func terminalTarget(for id: String) -> (term: String, tty: String) {
         let url = runDir.appendingPathComponent(id + ".term")
         let raw = ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = raw.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
         if parts.count == 2 {
-            term = String(parts[0])
-            tty = String(parts[1])
-        } else if !raw.isEmpty {
-            tty = raw
+            return (String(parts[0]), String(parts[1]))
         }
-        activateTerminal(term: term, tty: tty)
+        return ("Apple_Terminal", raw)
+    }
+
+    private func focusTerminal(id: String) {
+        let target = terminalTarget(for: id)
+        activateTerminal(term: target.term, tty: target.tty)
     }
 
     private func activateTerminal(term: String, tty: String) {
@@ -3039,6 +3310,81 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
         try? process.run()
+    }
+
+    private func sendTerminalText(
+        _ text: String,
+        term: String,
+        tty: String,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard tty.range(of: "^/dev/tty[a-z]*[0-9]+$", options: .regularExpression) != nil else {
+            completion(false)
+            return
+        }
+        let escaped = text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script: String
+        if term == "iTerm.app" {
+            script = """
+            tell application "iTerm2"
+                set targetTTY to "\(tty)"
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        repeat with s in sessions of t
+                            if tty of s is targetTTY then
+                                tell s to write text "\(escaped)"
+                                return "ok"
+                            end if
+                        end repeat
+                    end repeat
+                end repeat
+            end tell
+            return "missing"
+            """
+        } else {
+            script = """
+            tell application "Terminal"
+                set targetTTY to "\(tty)"
+                repeat with w in windows
+                    repeat with i from 1 to (count of tabs of w)
+                        set t to tab i of w
+                        if tty of t is targetTTY then
+                            do script "\(escaped)" in t
+                            return "ok"
+                        end if
+                    end repeat
+                end repeat
+            end tell
+            return "missing"
+            """
+        }
+        runAppleScript(script) { result in
+            completion(result == "ok")
+        }
+    }
+
+    private func runAppleScript(_ script: String, completion: @escaping (String?) -> Void) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { finished in
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async {
+                completion(finished.terminationStatus == 0 ? (output ?? "") : nil)
+            }
+        }
+        do {
+            try process.run()
+        } catch {
+            completion(nil)
+        }
     }
 
     private func playNextCheer() {
@@ -3122,6 +3468,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             badgeCache = ""
             bubblePanel?.orderOut(nil)
             badgePanel?.orderOut(nil)
+            effortShown = false
+            effortOffsetY = nil
+            effortPanel?.orderOut(nil)
             panel?.orderOut(nil)
         } else {
             panel?.orderFrontRegardless()
@@ -3159,6 +3508,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         bubblePanel?.level = level
         badgePanel?.level = level
         statsPanel?.level = level
+        effortPanel?.level = level
         saveState()
     }
 
@@ -3185,7 +3535,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             fontScale: Double(fontScale),
             hotkey: hotKeyEnabled,
             idleOpacity: Double(idleOpacity),
-            pinnedSession: pinnedSessionID
+            pinnedSession: pinnedSessionID,
+            effortBySession: effortBySession.isEmpty ? nil : effortBySession
         )
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: stateURL, options: .atomic)
@@ -3211,6 +3562,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func showMenu(_ event: NSEvent) {
+        hideEffortCard()
         let menu = NSMenu()
 
         let idleItem = NSMenuItem(
@@ -3279,6 +3631,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             sessionsMenu.addItem(emptyItem)
         } else {
             let recentModels = collectRecentModels()
+            let psSnapshot = processEntries()
             for (i, session) in sessions.enumerated() {
                 let item = NSMenuItem(
                     title: displayName(session) + " · " + stateLabel(session.state),
@@ -3302,6 +3655,22 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 )
                 modelItem.isEnabled = false
                 sub.addItem(modelItem)
+                let effortRow = NSMenuItem(
+                    title: "思考力度 " + effortLabel(effortLevel(for: session, entries: psSnapshot)),
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                effortRow.isEnabled = false
+                sub.addItem(effortRow)
+                let effortAction = NSMenuItem(
+                    title: "调整思考力度…",
+                    action: #selector(menuShowEffort(_:)),
+                    keyEquivalent: ""
+                )
+                effortAction.tag = i
+                effortAction.target = self
+                effortAction.isEnabled = session.resumeID != nil
+                sub.addItem(effortAction)
                 if let turnText = sessionTurnLabel(session) {
                     let turnItem = NSMenuItem(title: turnText, action: nil, keyEquivalent: "")
                     turnItem.isEnabled = false
@@ -3940,14 +4309,261 @@ private final class PetApp: NSObject, NSApplicationDelegate {
               let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] }),
               let rid = session.resumeID
         else { return }
+        let turningOff: Bool
         if reviewOffIDs.contains(rid) {
             reviewOffIDs.remove(rid)
-            triggerAlert("已恢复个人审查；仅对之后恢复的会话生效", silent: true, duration: 3.5)
+            turningOff = false
         } else {
             reviewOffIDs.insert(rid)
-            triggerAlert("已关闭个人审查；退出后用 --resume 恢复该会话才生效", silent: true, duration: 3.5)
+            turningOff = true
         }
         saveReviewOff()
+        let reason = turningOff
+            ? "已关闭该会话的个人审查（仅影响该会话），需要重启该会话才能生效。"
+            : "已恢复该会话的个人审查（仅影响该会话），需要重启该会话才能生效。"
+        let restarted = restartSession(
+            session,
+            effort: explicitEffort(for: session),
+            model: modelBySession[session.id],
+            skip: turningOff,
+            reason: reason
+        )
+        if restarted {
+            triggerAlert(turningOff ? "已关闭个人审查，正在重启…" : "已恢复个人审查，正在重启…",
+                         silent: true, duration: 4)
+        } else {
+            triggerAlert("个人审查已切换；仅影响该会话，下次恢复时生效", silent: true, duration: 3.5)
+        }
+    }
+
+    @objc private func menuShowEffort(_ sender: NSMenuItem) {
+        guard menuSessionIDs.indices.contains(sender.tag),
+              let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] })
+        else { return }
+        showEffortCard(for: session)
+    }
+
+    private func showEffortCard(for session: Session) {
+        guard let rid = session.resumeID, effortPanel != nil, !petHidden else { return }
+        hideEffortCard()
+        effortView.onCommit = { [weak self] index in
+            guard let self else { return }
+            let index = max(0, min(Int(index), effortLevels.count - 1))
+            self.hideEffortCard()
+            self.applyEffort(effortLevels[index].id, petID: session.id, resumeID: rid)
+        }
+        effortView.onCancel = { [weak self] in self?.hideEffortCard() }
+        effortView.configure(name: displayName(session), level: effortLevel(for: session))
+        effortSize = effortView.cardSize()
+        var bottom = panel.frame.maxY + 5
+        if bubbleShown { bottom = max(bottom, bubblePanel.frame.maxY + 6) }
+        if badgeShown { bottom = max(bottom, badgePanel.frame.maxY + 6) }
+        effortOffsetY = bottom - panel.frame.maxY
+        effortShown = true
+        layoutOverlays()
+        effortPanel.orderFront(nil)
+    }
+
+    private func hideEffortCard() {
+        guard effortShown else { return }
+        effortShown = false
+        effortOffsetY = nil
+        effortPanel?.orderOut(nil)
+        layoutOverlays()
+    }
+
+    private func applyEffort(_ level: String, petID: String, resumeID: String) {
+        guard effortLevels.contains(where: { $0.id == level }) else { return }
+        guard let session = sessions.first(where: { $0.id == petID }),
+              session.resumeID == resumeID else {
+            showNotice("无法应用思考力度", "该会话已经不在运行。")
+            return
+        }
+        guard session.state != "waiting" else {
+            showNotice(
+                "暂不能切换思考力度",
+                "该会话正在等待权限确认或计划审批，请先在终端处理对话框后再试。"
+            )
+            return
+        }
+        let target = terminalTarget(for: session.id)
+        sendTerminalText("/effort " + level, term: target.term, tty: target.tty) { [weak self] ok in
+            guard let self else { return }
+            guard ok else {
+                self.showNotice(
+                    "无法切换思考力度",
+                    "没有找到该会话对应的终端标签。请手动在会话中输入 /effort \(level)。"
+                )
+                return
+            }
+            self.effortBySession[resumeID] = level
+            self.saveState()
+            self.triggerAlert(
+                "思考力度已切换为「\(effortLabel(level))」",
+                silent: true,
+                duration: 3
+            )
+        }
+    }
+
+    private func explicitEffort(for session: Session, entries: [ProcessEntry]? = nil) -> String? {
+        // /effort changes the live level without touching argv; prefer our record.
+        if let rid = session.resumeID,
+           let stored = effortBySession[rid],
+           effortLevels.contains(where: { $0.id == stored }) {
+            return stored
+        }
+        if let proc = claudeProcess(forPetID: session.id, entries: entries),
+           let value = effortArgument(proc.args),
+           effortLevels.contains(where: { $0.id == value }) {
+            return value
+        }
+        return nil
+    }
+
+    private func effortLevel(for session: Session, entries: [ProcessEntry]? = nil) -> String {
+        explicitEffort(for: session, entries: entries) ?? defaultEffortLevel() ?? "high"
+    }
+
+    private func defaultEffortLevel() -> String? {
+        let url = URL(fileURLWithPath: NSHomeDirectory() + "/.claude/settings.json")
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        var value = root["effortLevel"] as? String
+        if value == nil, let env = root["env"] as? [String: Any] {
+            value = env["CLAUDE_CODE_EFFORT_LEVEL"] as? String
+        }
+        guard let value, effortLevels.contains(where: { $0.id == value }) else { return nil }
+        return value
+    }
+
+    private func wrapperShellPID(_ petID: String) -> Int32? {
+        let pidURL = runDir.appendingPathComponent(petID + ".pid")
+        guard let raw = try? String(contentsOf: pidURL, encoding: .utf8),
+              let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              pid > 0,
+              kill(pid, 0) == 0 || errno == EPERM else { return nil }
+        return pid
+    }
+
+    private func claudeProcess(forPetID petID: String, entries: [ProcessEntry]? = nil) -> ProcessEntry? {
+        guard let shell = wrapperShellPID(petID) else { return nil }
+        let children = (entries ?? processEntries()).filter { $0.ppid == shell }
+        if let named = children.first(where: { ($0.comm as NSString).lastPathComponent == "claude" }) {
+            return named
+        }
+        return children.first { child in
+            let args = child.args
+            return args == "claude"
+                || args.hasPrefix("claude ")
+                || args.contains("/claude ")
+                || args.hasSuffix("/claude")
+        }
+    }
+
+    @discardableResult
+    private func restartSession(
+        _ session: Session,
+        effort: String?,
+        model: String?,
+        skip: Bool,
+        reason: String
+    ) -> Bool {
+        guard let rid = session.resumeID,
+              rid.range(of: "^[A-Za-z0-9-]+$", options: .regularExpression) != nil else {
+            showNotice("无法自动重启", "该会话缺少有效的恢复 UUID，请手动恢复。")
+            return false
+        }
+        guard let proc = claudeProcess(forPetID: session.id) else {
+            showNotice(
+                "无法自动重启",
+                "没有找到由包装函数启动的 Claude 进程，无法在同一终端自动恢复。\n\n"
+                    + "请在终端退出后手动运行 claude --resume \(rid)。"
+            )
+            return false
+        }
+        var cleanModel: String?
+        if let model, !model.isEmpty {
+            guard model.range(of: "^[A-Za-z0-9._:/-]+$", options: .regularExpression) != nil else {
+                return false
+            }
+            cleanModel = model
+        }
+        var cleanEffort: String?
+        if let effort {
+            guard effortLevels.contains(where: { $0.id == effort }) else { return false }
+            cleanEffort = effort
+        }
+        let alert = NSAlert()
+        alert.messageText = "重启会话并恢复对话？"
+        var command = "claude --resume " + rid
+        if let cleanModel { command += " --model " + cleanModel }
+        if let cleanEffort { command += " --effort " + cleanEffort }
+        if skip { command += " --dangerously-skip-permissions" }
+        alert.informativeText = reason + "\n\n将结束当前 Claude 进程，并在同一终端自动运行：\n"
+            + command + "\n\n对话记录已保存，恢复后从原处继续。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "重启")
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+
+        var lines = ["resume=" + rid]
+        if let cleanModel { lines.append("model=" + cleanModel) }
+        if let cleanEffort { lines.append("effort=" + cleanEffort) }
+        lines.append("skip=" + (skip ? "1" : "0"))
+        let restartURL = runDir.appendingPathComponent(session.id + ".restart")
+        do {
+            try (lines.joined(separator: "\n") + "\n")
+                .write(to: restartURL, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o600)],
+                ofItemAtPath: restartURL.path
+            )
+        } catch {
+            showNotice("无法自动重启", "写入重启标记失败：\(error.localizedDescription)")
+            return false
+        }
+        markRestarting(session.id)
+        kill(proc.pid, SIGTERM)
+        triggerAlert("正在重启会话并恢复…", silent: true, duration: 5)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.focusTerminal(id: session.id)
+        }
+        return true
+    }
+
+    private func markRestarting(_ petID: String) {
+        let url = runDir.appendingPathComponent(petID + ".json")
+        guard let data = try? Data(contentsOf: url),
+              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+        object["state"] = "start"
+        object["event"] = "Restart"
+        object["ts"] = Date().timeIntervalSince1970
+        object["tool"] = ""
+        object["detail"] = ""
+        object["message"] = "正在重启并恢复会话…"
+        object.removeValue(forKey: "turnStart")
+        guard let output = try? JSONSerialization.data(withJSONObject: object) else { return }
+        try? output.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o600)],
+            ofItemAtPath: url.path
+        )
+    }
+
+    private func showNotice(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "好")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc private func menuCopySessionID(_ sender: NSMenuItem) {

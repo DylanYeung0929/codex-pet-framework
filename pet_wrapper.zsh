@@ -27,7 +27,32 @@ claude() {
   fi
   local rc=0
   if [[ -n "$pet_id" ]]; then
-    ( export CODEX_PET_ID="$pet_id"; command claude "$@" )
+    (
+      export CODEX_PET_ID="$pet_id"
+      while :; do
+        command claude "$@"
+        rc=$?
+        local restart="$pet_root/run/$pet_id.restart"
+        [[ -f "$restart" ]] || break
+        local r_resume="" r_effort="" r_model="" r_skip=0
+        local r_key r_value
+        while IFS='=' read -r r_key r_value; do
+          case "$r_key" in
+            resume) r_resume="$r_value" ;;
+            effort) r_effort="$r_value" ;;
+            model) r_model="$r_value" ;;
+            skip) r_skip="$r_value" ;;
+          esac
+        done < "$restart"
+        rm -f "$restart"
+        [[ "$r_resume" =~ ^[A-Za-z0-9-]+$ ]] || break
+        set -- --resume "$r_resume"
+        [[ -n "$r_model" ]] && set -- "$@" --model "$r_model"
+        [[ -n "$r_effort" ]] && set -- "$@" --effort "$r_effort"
+        (( r_skip == 1 )) && set -- "$@" --dangerously-skip-permissions
+      done
+      return $rc
+    )
     rc=$?
     rm -f "$pet_root/run/$pet_id.json" "$pet_root/run/$pet_id.pid" "$pet_root/run/$pet_id.term"
   else
