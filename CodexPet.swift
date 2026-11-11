@@ -60,6 +60,7 @@ private struct PetState: Codable {
     var fontScale: Double?
     var hotkey: Bool?
     var idleOpacity: Double?
+    var pinnedSession: String?
 }
 
 private struct PetDayRecord: Codable {
@@ -824,8 +825,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var primaryID: String?
     private var usageBySession: [String: Int] = [:]
     private var modelBySession: [String: String] = [:]
+    private var pinnedSessionID: String?
     private var emptySince: Date?
     private var lastUsageRead: Double = 0
+    private let scanQueue = DispatchQueue(label: "CodexPet.scan", qos: .utility)
+    private var usageRefreshing = false
+    private var transcriptRefreshing = false
+    private var transcriptRefreshPending = false
+    private var tokenScanning = false
     private var idleDimmed = false
     private var idleOpacity: CGFloat = 0.6
     private var balanceAlertThreshold = 5.0
@@ -984,6 +991,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(appActivated),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
         applyMotion(index: index, loop: loop)
         startTimers()
         pollSessions()
@@ -1017,6 +1030,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if let value = state.dnd { doNotDisturb = value }
             if let value = state.hotkey { hotKeyEnabled = value }
             if let value = state.idleOpacity { idleOpacity = min(max(CGFloat(value), 0.1), 1.0) }
+            if let value = state.pinnedSession, !value.isEmpty { pinnedSessionID = value }
             if let map = state.motionMap {
                 let known = Set(stateMotionGroups.flatMap { $0.key.split(separator: ",").map(String.init) })
                 for (stateKey, motionKey) in map where known.contains(stateKey) {
@@ -1243,6 +1257,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         saveState()
     }
 
+    @objc private func appActivated(_ note: Notification) {
+        guard frontmostTerminalHint() != nil else { return }
+        refreshFrontTTY()
+        refreshTitles()
+    }
+
     private func startFrameTimer(interval: TimeInterval) {
         frameTimer?.invalidate()
         let timer = Timer(
@@ -1342,10 +1362,17 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    private func terminalRunning(_ term: String) -> Bool {
+        let bundle = term.hasPrefix("iTerm") ? "com.googlecode.iterm2" : "com.apple.Terminal"
+        return NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundle }
+    }
+
     @objc private func refreshFrontTTY() {
         guard currentOnly, !frontBusy else { return }
+        let front = frontmostTerminalHint()
+        if front == nil, frontTTY?.isEmpty == false { return }
         let termHint: String?
-        if let front = frontmostTerminalHint() {
+        if let front {
             termHint = front
         } else {
             // In another app, follow the most recently active session's
@@ -1355,6 +1382,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 ?? runningTerminalHint()
         }
         let useITerm = termHint?.hasPrefix("iTerm") == true
+        guard terminalRunning(useITerm ? "iTerm.app" : "Apple_Terminal") else {
+            frontTTY = ""
+            return
+        }
         let script = useITerm ? """
         tell application "iTerm2"
         if (count of windows) = 0 then return ""
@@ -1388,11 +1419,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refreshTitles() {
-        guard !titlesBusy else { return }
+        guard !titlesBusy, !petHidden else { return }
         let activeTerms = sessions.filter { $0.tty != nil }.map { $0.term }
         guard !activeTerms.isEmpty else { return }
         let wantsTerminal = activeTerms.contains { ($0 ?? "Apple_Terminal") == "Apple_Terminal" }
+            && terminalRunning("Apple_Terminal")
         let wantsITerm = activeTerms.contains { $0?.hasPrefix("iTerm") == true }
+            && terminalRunning("iTerm.app")
         guard wantsTerminal || wantsITerm else { return }
         titlesBusy = true
         var script = "set out to \"\"\n"
@@ -1600,6 +1633,11 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             ))
         }
         return result.sorted { a, b in
+            if let pin = pinnedSessionID {
+                let aPinned = a.resumeID == pin && a.state != "idle" && a.state != "done"
+                let bPinned = b.resumeID == pin && b.state != "idle" && b.state != "done"
+                if aPinned != bPinned { return aPinned }
+            }
             let pa = statePriority(a.state)
             let pb = statePriority(b.state)
             if pa != pb { return pa > pb }
@@ -1609,32 +1647,43 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     private func refreshUsages() {
         let now = CACurrentMediaTime()
-        guard now - lastUsageRead > 0.6 else { return }
+        guard now - lastUsageRead > 0.6, !usageRefreshing else { return }
         lastUsageRead = now
-        var next: [String: Int] = [:]
-        var models: [String: String] = [:]
-        for session in sessions {
-            guard let path = session.transcript else { continue }
-            let info = readTranscript(path: path, thinkingAfter: nil, wantThinking: false)
-            if let model = info.model, !model.isEmpty {
-                models[session.id] = model
-            }
-            if let used = info.used, used > 0 {
-                next[session.id] = used
-                if stats.usage[session.id] != used {
-                    stats.usage[session.id] = used
-                    statsDirty = true
+        usageRefreshing = true
+        let snapshot = sessions.compactMap { session -> (String, String)? in
+            guard let path = session.transcript, !path.isEmpty else { return nil }
+            return (session.id, path)
+        }
+        scanQueue.async { [weak self] in
+            guard let self else { return }
+            var next: [String: Int] = [:]
+            var models: [String: String] = [:]
+            for (id, path) in snapshot {
+                let info = self.readTranscript(path: path, thinkingAfter: nil, wantThinking: false)
+                if let model = info.model, !model.isEmpty {
+                    models[id] = model
+                }
+                if let used = info.used, used > 0 {
+                    next[id] = used
                 }
             }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.usageRefreshing = false
+                self.usageBySession = next
+                self.modelBySession = models
+                for (id, used) in next where self.stats.usage[id] != used {
+                    self.stats.usage[id] = used
+                    self.statsDirty = true
+                }
+                self.evaluateContextAlert()
+            }
         }
-        usageBySession = next
-        modelBySession = models
-        evaluateContextAlert()
     }
 
     private func refreshTodayTokens() {
         let now = CACurrentMediaTime()
-        guard now - lastTokenScan > 4 else { return }
+        guard now - lastTokenScan > 4, !tokenScanning else { return }
         lastTokenScan = now
         let day = todayKey()
         if tokenScanDay != day {
@@ -1642,53 +1691,71 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             tokenFileStates.removeAll()
             tokenFileMtimes.removeAll()
         }
-        let fm = FileManager.default
-        let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
-        guard let dirs = try? fm.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        var total = 0
-        var caughtUp = true
-        var live = Set<String>()
-        let nowDate = Date()
-        for dir in dirs {
-            guard (try? dir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
-            let files = (try? fm.contentsOfDirectory(
-                at: dir,
-                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+        tokenScanning = true
+        let scanDay = tokenScanDay
+        let states = tokenFileStates
+        let mtimes = tokenFileMtimes
+        scanQueue.async { [weak self] in
+            guard let self else { return }
+            var states = states
+            var mtimes = mtimes
+            let fm = FileManager.default
+            let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
+            var total = 0
+            var caughtUp = true
+            var live = Set<String>()
+            let dirs = (try? fm.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey],
                 options: [.skipsHiddenFiles]
             )) ?? []
-            for file in files where file.pathExtension == "jsonl" {
-                guard let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
-                      let mtime = values.contentModificationDate,
-                      Calendar.current.isDate(mtime, inSameDayAs: nowDate) else { continue }
-                let path = file.path
-                live.insert(path)
-                var state = tokenFileStates[path] ?? TranscriptUsageState()
-                let size = UInt64(values.fileSize ?? 0)
-                if size < state.offset {
-                    state = TranscriptUsageState()
+            let nowDate = Date()
+            for dir in dirs {
+                guard (try? dir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+                let files = (try? fm.contentsOfDirectory(
+                    at: dir,
+                    includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                    options: [.skipsHiddenFiles]
+                )) ?? []
+                for file in files where file.pathExtension == "jsonl" {
+                    guard let values = try? file.resourceValues(
+                        forKeys: [.contentModificationDateKey, .fileSizeKey]
+                    ),
+                        let mtime = values.contentModificationDate,
+                        Calendar.current.isDate(mtime, inSameDayAs: nowDate)
+                    else { continue }
+                    let path = file.path
+                    live.insert(path)
+                    var state = states[path] ?? TranscriptUsageState()
+                    let size = UInt64(values.fileSize ?? 0)
+                    if size < state.offset {
+                        state = TranscriptUsageState()
+                    }
+                    if mtimes[path] != mtime || size > state.offset {
+                        self.scanUsageFile(path: path, state: &state)
+                        mtimes[path] = mtime
+                    }
+                    states[path] = state
+                    if state.offset + 65536 < size { caughtUp = false }
+                    total += state.tokens
                 }
-                if tokenFileMtimes[path] != mtime || size > state.offset {
-                    scanUsageFile(path: path, state: &state)
-                    tokenFileMtimes[path] = mtime
-                }
-                tokenFileStates[path] = state
-                if state.offset + 65536 < size { caughtUp = false }
-                total += state.tokens
             }
-        }
-        for path in tokenFileStates.keys where !live.contains(path) {
-            tokenFileStates.removeValue(forKey: path)
-            tokenFileMtimes.removeValue(forKey: path)
-        }
-        if caughtUp && stats.tokens != total {
-            stats.tokens = total
-            statsDirty = true
-            updateBadge()
+            for path in states.keys where !live.contains(path) {
+                states.removeValue(forKey: path)
+                mtimes.removeValue(forKey: path)
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.tokenScanning = false
+                guard self.tokenScanDay == scanDay else { return }
+                self.tokenFileStates = states
+                self.tokenFileMtimes = mtimes
+                if caughtUp && self.stats.tokens != total {
+                    self.stats.tokens = total
+                    self.statsDirty = true
+                    self.updateBadge()
+                }
+            }
         }
     }
 
@@ -1792,19 +1859,38 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         guard let path = transcriptPath else { return }
         let now = CACurrentMediaTime()
         guard force || now - lastTranscriptRead > 0.45 else { return }
-        lastTranscriptRead = now
-        let info = readTranscript(
-            path: path,
-            thinkingAfter: currentState == "thinking" ? thinkingFloor : nil
-        )
-        let scanned = scanAssistantText(path: path)
-        if !scanned.isEmpty {
-            lastAssistantText = scanned
-        } else if let text = info.text, !text.isEmpty {
-            lastAssistantText = text
+        if transcriptRefreshing {
+            if force { transcriptRefreshPending = true }
+            return
         }
-        if currentState == "thinking", let thinking = info.thinking, !thinking.isEmpty {
-            lastThinking = thinking
+        lastTranscriptRead = now
+        transcriptRefreshing = true
+        let state = currentState
+        let thinkingAfter = state == "thinking" ? thinkingFloor : nil
+        scanQueue.async { [weak self] in
+            guard let self else { return }
+            let info = self.readTranscript(path: path, thinkingAfter: thinkingAfter)
+            let scanned = self.scanAssistantText(path: path)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.transcriptRefreshing = false
+                let retry = self.transcriptRefreshPending
+                self.transcriptRefreshPending = false
+                guard self.transcriptPath == path else {
+                    self.refreshTranscript(force: true)
+                    return
+                }
+                if !scanned.isEmpty {
+                    self.lastAssistantText = scanned
+                } else if let text = info.text, !text.isEmpty {
+                    self.lastAssistantText = text
+                }
+                if self.currentState == "thinking",
+                   let thinking = info.thinking, !thinking.isEmpty {
+                    self.lastThinking = thinking
+                }
+                if retry { self.refreshTranscript(force: true) }
+            }
         }
     }
 
@@ -1857,10 +1943,17 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
 
         guard size > state.offset else { return state.text }
+        let cap: UInt64 = 8 << 20
+        if size - state.offset > cap {
+            state.offset = size - cap
+        }
         do {
             try handle.seek(toOffset: state.offset)
             let data = handle.readDataToEndOfFile()
-            guard let newline = data.lastIndex(of: 0x0A) else { return state.text }
+            guard let newline = data.lastIndex(of: 0x0A) else {
+                state.offset = size
+                return state.text
+            }
             let cut = data.distance(from: data.startIndex, to: newline) + 1
             state.offset += UInt64(cut)
             var latest: String?
@@ -2646,11 +2739,17 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
-    private func triggerAlert(_ message: String, sound: String = "", repeats: Int = 1) {
+    private func triggerAlert(
+        _ message: String,
+        sound: String = "",
+        repeats: Int = 1,
+        silent: Bool = false,
+        duration: Double = 8
+    ) {
         alertText = message
-        alertUntil = CACurrentMediaTime() + 8
+        alertUntil = CACurrentMediaTime() + duration
         updateBubble()
-        guard soundEnabled, !doNotDisturb else { return }
+        guard !silent, soundEnabled, !doNotDisturb else { return }
         playSoundRepeated(sound.isEmpty ? soundWaiting : sound, times: repeats)
     }
 
@@ -3026,6 +3125,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             panel?.orderOut(nil)
         } else {
             panel?.orderFrontRegardless()
+            refreshTitles()
             updateBubble()
             updateBadge()
             updateIdleOpacity()
@@ -3084,7 +3184,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             dnd: doNotDisturb,
             fontScale: Double(fontScale),
             hotkey: hotKeyEnabled,
-            idleOpacity: Double(idleOpacity)
+            idleOpacity: Double(idleOpacity),
+            pinnedSession: pinnedSessionID
         )
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: stateURL, options: .atomic)
@@ -3201,6 +3302,11 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 )
                 modelItem.isEnabled = false
                 sub.addItem(modelItem)
+                if let turnText = sessionTurnLabel(session) {
+                    let turnItem = NSMenuItem(title: turnText, action: nil, keyEquivalent: "")
+                    turnItem.isEnabled = false
+                    sub.addItem(turnItem)
+                }
                 sub.addItem(.separator())
                 let focus = NSMenuItem(
                     title: "聚焦终端",
@@ -3220,6 +3326,46 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 copyID.target = self
                 copyID.isEnabled = session.resumeID != nil
                 sub.addItem(copyID)
+                let copyCommand = NSMenuItem(
+                    title: "复制恢复命令",
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                copyCommand.isEnabled = !session.cwd.isEmpty && session.resumeID != nil
+                let copyMenu = NSMenu()
+                func addCopyModel(_ model: String?) {
+                    let item = NSMenuItem(
+                        title: model ?? "默认模型",
+                        action: #selector(menuCopyResumeCommand(_:)),
+                        keyEquivalent: ""
+                    )
+                    item.tag = i
+                    item.representedObject = model
+                    item.target = self
+                    copyMenu.addItem(item)
+                }
+                addCopyModel(nil)
+                recentModels.forEach { addCopyModel($0) }
+                let copyOfficial = providerModels.filter { !recentModels.contains($0) }
+                if !copyOfficial.isEmpty {
+                    copyMenu.addItem(.separator())
+                    let header = NSMenuItem(title: "官方模型", action: nil, keyEquivalent: "")
+                    header.isEnabled = false
+                    copyMenu.addItem(header)
+                    copyOfficial.forEach { addCopyModel($0) }
+                }
+                copyCommand.submenu = copyMenu
+                sub.addItem(copyCommand)
+                let pin = NSMenuItem(
+                    title: "置顶会话",
+                    action: #selector(menuTogglePinSession(_:)),
+                    keyEquivalent: ""
+                )
+                pin.tag = i
+                pin.target = self
+                pin.isEnabled = session.resumeID != nil
+                if let rid = session.resumeID, rid == pinnedSessionID { pin.state = .on }
+                sub.addItem(pin)
                 sub.addItem(.separator())
                 let resume = NSMenuItem(
                     title: "默认模型",
@@ -3571,6 +3717,19 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         return "上下文 \(percent)% · \(formatTokens(used)) / \(formatTokens(contextWindow))"
     }
 
+    private func sessionTurnLabel(_ session: Session) -> String? {
+        let activeStates: Set<String> = ["thinking", "bash", "search", "tool", "waiting", "start"]
+        let now = Date().timeIntervalSince1970
+        if activeStates.contains(session.state),
+           let start = session.turnStart ?? turnStartBySession[session.id], now >= start {
+            return "本轮已运行 " + formatDuration(now - start)
+        }
+        if let duration = turnDurationBySession[session.id] {
+            return "上轮用时 " + formatDuration(duration)
+        }
+        return nil
+    }
+
     @objc private func menuIdle() {
         overrideUntil = 0
         applyMotion(index: idleIndex, loop: true)
@@ -3783,8 +3942,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         else { return }
         if reviewOffIDs.contains(rid) {
             reviewOffIDs.remove(rid)
+            triggerAlert("已恢复个人审查；仅对之后恢复的会话生效", silent: true, duration: 3.5)
         } else {
             reviewOffIDs.insert(rid)
+            triggerAlert("已关闭个人审查；退出后用 --resume 恢复该会话才生效", silent: true, duration: 3.5)
         }
         saveReviewOff()
     }
@@ -3797,6 +3958,43 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(id, forType: .string)
+    }
+
+    @objc private func menuCopyResumeCommand(_ sender: NSMenuItem) {
+        guard menuSessionIDs.indices.contains(sender.tag),
+              let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] }),
+              let id = session.resumeID
+        else { return }
+        guard id.range(of: "^[A-Za-z0-9-]+$", options: .regularExpression) != nil else { return }
+        let model = sender.representedObject as? String
+        if let model,
+           model.range(of: "^[A-Za-z0-9._:/-]+$", options: .regularExpression) == nil {
+            return
+        }
+        let cwd = session.cwd.isEmpty ? NSHomeDirectory() : session.cwd
+        var line = "cd " + shellQuote(cwd) + " && claude --resume " + shellQuote(id)
+        if let model { line += " --model " + shellQuote(model) }
+        if reviewOffIDs.contains(id) { line += " --dangerously-skip-permissions" }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(line, forType: .string)
+        triggerAlert("已复制恢复命令", silent: true, duration: 2.5)
+    }
+
+    @objc private func menuTogglePinSession(_ sender: NSMenuItem) {
+        guard menuSessionIDs.indices.contains(sender.tag),
+              let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] }),
+              let rid = session.resumeID
+        else { return }
+        if pinnedSessionID == rid {
+            pinnedSessionID = nil
+            triggerAlert("已取消置顶", silent: true, duration: 2.5)
+        } else {
+            pinnedSessionID = rid
+            triggerAlert("已置顶 " + displayName(session), silent: true, duration: 2.5)
+        }
+        saveState()
+        pollSessions()
     }
 
     @objc private func menuResumeSession(_ sender: NSMenuItem) {
@@ -3951,18 +4149,19 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             }
         }
         files.sort { $0.1 > $1.1 }
-        guard let pattern = try? NSRegularExpression(pattern: "\"model\"\\s*:\\s*\"([^\"]+)\"") else {
-            return []
-        }
         var models: [String] = []
         func absorb(_ text: String, reversed: Bool) -> Bool {
             guard !text.isEmpty else { return false }
-            let ns = text as NSString
-            let matches = pattern.matches(in: text, range: NSRange(location: 0, length: ns.length))
-            for match in (reversed ? matches.reversed() : matches) {
-                guard let range = Range(match.range(at: 1), in: text) else { continue }
-                let model = String(text[range])
-                if model.isEmpty || model == "<synthetic>" || models.contains(model) { continue }
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+            for line in (reversed ? lines.reversed() : lines) {
+                guard line.contains("\"model\""),
+                      let data = line.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      object["type"] as? String == "assistant",
+                      let message = object["message"] as? [String: Any],
+                      let model = message["model"] as? String,
+                      !model.isEmpty, model != "<synthetic>", !models.contains(model)
+                else { continue }
                 models.append(model)
                 if models.count >= 8 { return true }
             }
