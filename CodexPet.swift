@@ -822,18 +822,22 @@ private final class BubbleView: NSView {
                     .foregroundColor: NSColor(srgbRed: 0.52, green: 0.76, blue: 1.0, alpha: 0.9),
                     .paragraphStyle: paragraph,
                 ]))
-                text.append(NSAttributedString(string: "  " + row.state, attributes: [
+                text.append(NSAttributedString(string: "  ", attributes: [
                     .font: BubbleView.titleFont,
-                    .foregroundColor: row.color,
                     .paragraphStyle: paragraph,
                 ]))
                 if let time = row.time, !time.isEmpty {
-                    text.append(NSAttributedString(string: " " + time, attributes: [
+                    text.append(NSAttributedString(string: time + "  ", attributes: [
                         .font: BubbleView.monoFont,
                         .foregroundColor: NSColor.white.withAlphaComponent(0.6),
                         .paragraphStyle: paragraph,
                     ]))
                 }
+                text.append(NSAttributedString(string: row.state, attributes: [
+                    .font: BubbleView.titleFont,
+                    .foregroundColor: row.color,
+                    .paragraphStyle: paragraph,
+                ]))
                 if let pct = row.pct, !pct.isEmpty {
                     text.append(NSAttributedString(string: " · " + pct, attributes: [
                         .font: BubbleView.detailFont,
@@ -863,16 +867,16 @@ private final class BubbleView: NSView {
                 .foregroundColor: NSColor(srgbRed: 0.52, green: 0.76, blue: 1.0, alpha: 0.9),
             ]))
         }
-        text.append(NSAttributedString(string: content.title, attributes: [
-            .font: BubbleView.titleFont,
-            .foregroundColor: content.titleColor ?? NSColor.white.withAlphaComponent(0.97),
-        ]))
         if let time = content.time, !time.isEmpty {
-            text.append(NSAttributedString(string: "  " + time, attributes: [
+            text.append(NSAttributedString(string: time + "  ", attributes: [
                 .font: BubbleView.monoFont,
                 .foregroundColor: NSColor.white.withAlphaComponent(0.6),
             ]))
         }
+        text.append(NSAttributedString(string: content.title, attributes: [
+            .font: BubbleView.titleFont,
+            .foregroundColor: content.titleColor ?? NSColor.white.withAlphaComponent(0.97),
+        ]))
         if let detail = content.detail, !detail.isEmpty {
             text.append(NSAttributedString(string: "\n" + detail, attributes: [
                 .font: content.mono ? BubbleView.monoFont : BubbleView.detailFont,
@@ -1077,7 +1081,25 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var frontTimer: Timer?
     private var titlesByTTY: [String: String] = [:]
     private var titlesBusy = false
+    private struct FileStamp: Equatable {
+        var mtime: Date
+        var size: Int
+    }
+
+    private struct CachedStatus {
+        var stamp: FileStamp
+        var status: PetStatus
+    }
+
+    private struct CachedTerm {
+        var stamp: FileStamp
+        var tty: String?
+        var term: String?
+    }
+
     private var sessions: [Session] = []
+    private var statusCache: [String: CachedStatus] = [:]
+    private var termCache: [String: CachedTerm] = [:]
     private var primaryID: String?
     private var usageBySession: [String: Int] = [:]
     private var modelBySession: [String: String] = [:]
@@ -1865,21 +1887,53 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private func loadSessions() -> [Session] {
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: runDir,
-            includingPropertiesForKeys: nil
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
         ) else { return [] }
+        var stamps: [String: FileStamp] = [:]
+        for url in entries {
+            if let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+               let mtime = values.contentModificationDate,
+               let size = values.fileSize {
+                stamps[url.path] = FileStamp(mtime: mtime, size: size)
+            }
+        }
+        var liveIDs = Set<String>()
         var result: [Session] = []
         for url in entries where url.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: url),
-                  let status = try? JSONDecoder().decode(PetStatus.self, from: data) else { continue }
             let id = url.deletingPathExtension().lastPathComponent
+            liveIDs.insert(id)
+            let stamp = stamps[url.path]
+            let status: PetStatus
+            if let stamp, let cached = statusCache[id], cached.stamp == stamp {
+                status = cached.status
+            } else {
+                guard let data = try? Data(contentsOf: url),
+                      let decoded = try? JSONDecoder().decode(PetStatus.self, from: data) else {
+                    statusCache[id] = nil
+                    continue
+                }
+                status = decoded
+                statusCache[id] = stamp.map { CachedStatus(stamp: $0, status: decoded) }
+            }
             var tty: String?
             var term: String?
-            if let raw = try? String(contentsOf: runDir.appendingPathComponent(id + ".term"), encoding: .utf8) {
-                let raw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                let parts = raw.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
-                let value = parts.count == 2 ? String(parts[1]) : raw
-                if value.hasPrefix("/dev/") { tty = value }
-                if parts.count == 2, !parts[0].isEmpty { term = String(parts[0]) }
+            let termURL = runDir.appendingPathComponent(id + ".term")
+            if let stamp = stamps[termURL.path] {
+                if let cached = termCache[id], cached.stamp == stamp {
+                    tty = cached.tty
+                    term = cached.term
+                } else if let raw = try? String(contentsOf: termURL, encoding: .utf8) {
+                    let raw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let parts = raw.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+                    let value = parts.count == 2 ? String(parts[1]) : raw
+                    if value.hasPrefix("/dev/") { tty = value }
+                    if parts.count == 2, !parts[0].isEmpty { term = String(parts[0]) }
+                    termCache[id] = CachedTerm(stamp: stamp, tty: tty, term: term)
+                } else {
+                    termCache[id] = nil
+                }
+            } else {
+                termCache[id] = nil
             }
             let transcriptID = status.transcript.map {
                 (($0 as NSString).lastPathComponent as NSString).deletingPathExtension
@@ -1900,6 +1954,12 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 turnStart: status.turnStart,
                 resumeID: resumeID
             ))
+        }
+        if statusCache.count != liveIDs.count || !liveIDs.isSuperset(of: statusCache.keys) {
+            statusCache = statusCache.filter { liveIDs.contains($0.key) }
+        }
+        if termCache.count > liveIDs.count || !liveIDs.isSuperset(of: termCache.keys) {
+            termCache = termCache.filter { liveIDs.contains($0.key) }
         }
         return result.sorted { a, b in
             if let pin = pinnedSessionID {
@@ -3101,7 +3161,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         let maxWidth = max(260, min(420, panel.frame.width * 3.2))
         let maxLines = hovered ? 5 : 3
-        var cache = "\(content.prefix ?? "")|\(content.title)|\(content.detail ?? "")|\(Int(maxWidth))|\(maxLines)"
+        var cache = "\(content.prefix ?? "")|\(content.time ?? "")|\(content.title)|\(content.detail ?? "")|\(Int(maxWidth))|\(maxLines)"
         if !content.rows.isEmpty {
             cache += "|" + content.rows.map { $0.name + $0.state + ($0.time ?? "") + ($0.pct ?? "") }.joined(separator: ";")
         }
@@ -3630,8 +3690,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         menu.addItem(idleItem)
         menu.addItem(.separator())
 
-        let motionsItem = NSMenuItem(title: "动作", action: nil, keyEquivalent: "")
-        let motionMenu = NSMenu()
+        let animationItem = NSMenuItem(title: "动画", action: nil, keyEquivalent: "")
+        let animationMenu = NSMenu()
         for (i, motion) in motions.enumerated() {
             let item = NSMenuItem(
                 title: motion.name,
@@ -3641,10 +3701,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             item.tag = i
             item.target = self
             if i == index { item.state = .on }
-            motionMenu.addItem(item)
+            animationMenu.addItem(item)
         }
-        motionsItem.submenu = motionMenu
-        menu.addItem(motionsItem)
+        animationMenu.addItem(.separator())
 
         let stateItem = NSMenuItem(title: "状态动画", action: nil, keyEquivalent: "")
         let stateMenu = NSMenu()
@@ -3676,7 +3735,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         resetStates.target = self
         stateMenu.addItem(resetStates)
         stateItem.submenu = stateMenu
-        menu.addItem(stateItem)
+        animationMenu.addItem(stateItem)
+        animationItem.submenu = animationMenu
+        menu.addItem(animationItem)
 
         let sessionsItem = NSMenuItem(title: "会话", action: nil, keyEquivalent: "")
         let sessionsMenu = NSMenu()
