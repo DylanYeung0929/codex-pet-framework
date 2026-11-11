@@ -3712,8 +3712,9 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let hideItem = NSMenuItem(
             title: "隐藏宠物",
             action: #selector(menuHidePet),
-            keyEquivalent: ""
+            keyEquivalent: hotKeyEnabled ? "p" : ""
         )
+        hideItem.keyEquivalentModifierMask = [.command, .option]
         hideItem.target = self
         menu.addItem(hideItem)
         menu.addItem(.separator())
