@@ -3920,6 +3920,21 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         )
         newSessionItem.target = self
         sessionsMenu.addItem(newSessionItem)
+        let timeoutItem = NSMenuItem(title: "工具超时阈值", action: nil, keyEquivalent: "")
+        let timeoutMenu = NSMenu()
+        for minutes in [0, 5, 10, 15, 30, 60] {
+            let item = NSMenuItem(
+                title: minutes == 0 ? "关闭" : "\(minutes) 分钟",
+                action: #selector(menuToolTimeout(_:)),
+                keyEquivalent: ""
+            )
+            item.tag = minutes
+            item.target = self
+            if abs(toolTimeout - Double(minutes) * 60) < 0.5 { item.state = .on }
+            timeoutMenu.addItem(item)
+        }
+        timeoutItem.submenu = timeoutMenu
+        sessionsMenu.addItem(timeoutItem)
         sessionsMenu.addItem(.separator())
         if sessions.isEmpty {
             let emptyItem = NSMenuItem(title: "无活跃会话", action: nil, keyEquivalent: "")
@@ -4300,21 +4315,6 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             targetItem.submenu = choices
             soundMenu.addItem(targetItem)
         }
-        let timeoutItem = NSMenuItem(title: "工具超时阈值", action: nil, keyEquivalent: "")
-        let timeoutMenu = NSMenu()
-        for minutes in [0, 5, 10, 15, 30, 60] {
-            let item = NSMenuItem(
-                title: minutes == 0 ? "关闭" : "\(minutes) 分钟",
-                action: #selector(menuToolTimeout(_:)),
-                keyEquivalent: ""
-            )
-            item.tag = minutes
-            item.target = self
-            if abs(toolTimeout - Double(minutes) * 60) < 0.5 { item.state = .on }
-            timeoutMenu.addItem(item)
-        }
-        timeoutItem.submenu = timeoutMenu
-        soundMenu.addItem(timeoutItem)
         soundMenu.addItem(.separator())
         let volumeItem = NSMenuItem(title: "音量", action: nil, keyEquivalent: "")
         let volumeMenu = NSMenu()
