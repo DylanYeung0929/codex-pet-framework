@@ -3843,6 +3843,26 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         arkItem.submenu = arkMenu
         menu.addItem(arkItem)
 
+        let appearanceMenu = NSMenu()
+        let appearanceItem = NSMenuItem(title: "外观", action: nil, keyEquivalent: "")
+        appearanceItem.submenu = appearanceMenu
+        menu.addItem(appearanceItem)
+
+        let soundMenu = NSMenu()
+        let soundItem = NSMenuItem(title: "声音", action: nil, keyEquivalent: "")
+        soundItem.submenu = soundMenu
+        menu.addItem(soundItem)
+
+        let statsMenu = NSMenu()
+        let statsMenuItem = NSMenuItem(title: "统计", action: nil, keyEquivalent: "")
+        statsMenuItem.submenu = statsMenu
+        menu.addItem(statsMenuItem)
+
+        let windowMenu = NSMenu()
+        let windowItem = NSMenuItem(title: "窗口", action: nil, keyEquivalent: "")
+        windowItem.submenu = windowMenu
+        menu.addItem(windowItem)
+
         let sizeItem = NSMenuItem(title: "大小", action: nil, keyEquivalent: "")
         let sizeMenu = NSMenu()
         for value in [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] {
@@ -3857,7 +3877,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             sizeMenu.addItem(item)
         }
         sizeItem.submenu = sizeMenu
-        menu.addItem(sizeItem)
+        appearanceMenu.addItem(sizeItem)
 
         let fontItem = NSMenuItem(title: "字号", action: nil, keyEquivalent: "")
         let fontMenu = NSMenu()
@@ -3876,7 +3896,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             fontMenu.addItem(item)
         }
         fontItem.submenu = fontMenu
-        menu.addItem(fontItem)
+        appearanceMenu.addItem(fontItem)
 
         let speedItem = NSMenuItem(title: "动画速度", action: nil, keyEquivalent: "")
         let speedMenu = NSMenu()
@@ -3896,7 +3916,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             speedMenu.addItem(item)
         }
         speedItem.submenu = speedMenu
-        menu.addItem(speedItem)
+        appearanceMenu.addItem(speedItem)
 
         let opacityItem = NSMenuItem(title: "空闲透明度", action: nil, keyEquivalent: "")
         let opacityMenu = NSMenu()
@@ -3912,7 +3932,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             opacityMenu.addItem(item)
         }
         opacityItem.submenu = opacityMenu
-        menu.addItem(opacityItem)
+        appearanceMenu.addItem(opacityItem)
+        appearanceMenu.addItem(.separator())
 
         let bubbleItem = NSMenuItem(
             title: "显示气泡",
@@ -3921,7 +3942,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         )
         bubbleItem.target = self
         bubbleItem.state = showBubble ? .on : .off
-        menu.addItem(bubbleItem)
+        appearanceMenu.addItem(bubbleItem)
 
         let badgeItem = NSMenuItem(
             title: "显示悬停徽章",
@@ -3930,19 +3951,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         )
         badgeItem.target = self
         badgeItem.state = showBadge ? .on : .off
-        menu.addItem(badgeItem)
+        appearanceMenu.addItem(badgeItem)
 
-        let dndItem = NSMenuItem(
-            title: "勿扰模式（静音提醒）",
-            action: #selector(menuDND),
-            keyEquivalent: ""
-        )
-        dndItem.target = self
-        dndItem.state = doNotDisturb ? .on : .off
-        menu.addItem(dndItem)
-
-        let soundItem = NSMenuItem(title: "提示音", action: nil, keyEquivalent: "")
-        let soundMenu = NSMenu()
         let soundToggle = NSMenuItem(
             title: "启用提示音",
             action: #selector(menuSound),
@@ -3993,8 +4003,15 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         volumeItem.submenu = volumeMenu
         soundMenu.addItem(volumeItem)
-        soundItem.submenu = soundMenu
-        menu.addItem(soundItem)
+        soundMenu.addItem(.separator())
+        let dndItem = NSMenuItem(
+            title: "勿扰模式（静音提醒）",
+            action: #selector(menuDND),
+            keyEquivalent: ""
+        )
+        dndItem.target = self
+        dndItem.state = doNotDisturb ? .on : .off
+        soundMenu.addItem(dndItem)
 
         let currentItem = NSMenuItem(
             title: "只显示当前会话",
@@ -4003,7 +4020,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         )
         currentItem.target = self
         currentItem.state = currentOnly ? .on : .off
-        menu.addItem(currentItem)
+        appearanceMenu.addItem(currentItem)
 
         let lockItem = NSMenuItem(
             title: "锁定位置",
@@ -4012,7 +4029,16 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         )
         lockItem.target = self
         lockItem.state = lockedPet ? .on : .off
-        menu.addItem(lockItem)
+        windowMenu.addItem(lockItem)
+
+        let topItem = NSMenuItem(
+            title: "始终置顶",
+            action: #selector(menuTop),
+            keyEquivalent: ""
+        )
+        topItem.target = self
+        topItem.state = onTop ? .on : .off
+        windowMenu.addItem(topItem)
 
         let hotKeyItem = NSMenuItem(
             title: hotKeyFailed ? "⌥⌘P 显示/隐藏宠物（注册失败）" : "⌥⌘P 显示/隐藏宠物",
@@ -4021,16 +4047,16 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         )
         hotKeyItem.target = self
         hotKeyItem.state = hotKeyEnabled ? .on : .off
-        menu.addItem(hotKeyItem)
+        windowMenu.addItem(hotKeyItem)
 
-        menu.addItem(.separator())
+        windowMenu.addItem(.separator())
         let resetItem = NSMenuItem(
             title: "重置位置",
             action: #selector(menuResetPosition),
             keyEquivalent: ""
         )
         resetItem.target = self
-        menu.addItem(resetItem)
+        windowMenu.addItem(resetItem)
 
         let reloadItem = NSMenuItem(
             title: "重新载入素材",
@@ -4038,7 +4064,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         reloadItem.target = self
-        menu.addItem(reloadItem)
+        windowMenu.addItem(reloadItem)
 
         let dataItem = NSMenuItem(
             title: "打开数据目录",
@@ -4046,7 +4072,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         dataItem.target = self
-        menu.addItem(dataItem)
+        windowMenu.addItem(dataItem)
 
         let statsItem = NSMenuItem(
             title: "今日统计",
@@ -4054,7 +4080,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         statsItem.target = self
-        menu.addItem(statsItem)
+        statsMenu.addItem(statsItem)
 
         let historyItem = NSMenuItem(
             title: "近 7 天统计",
@@ -4062,17 +4088,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         historyItem.target = self
-        menu.addItem(historyItem)
-
-        menu.addItem(.separator())
-        let topItem = NSMenuItem(
-            title: "始终置顶",
-            action: #selector(menuTop),
-            keyEquivalent: ""
-        )
-        topItem.target = self
-        topItem.state = onTop ? .on : .off
-        menu.addItem(topItem)
+        statsMenu.addItem(historyItem)
 
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出", action: #selector(menuQuit), keyEquivalent: "q")
