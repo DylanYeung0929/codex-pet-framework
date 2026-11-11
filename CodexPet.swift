@@ -2234,6 +2234,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         toolRunStart = toolRunStart.filter { activeIDs.contains($0.key) }
         toolRunAlerted = toolRunAlerted.filter { activeIDs.contains($0) }
         guard toolTimeout > 0 else { return }
+        let displayedPrimary = loaded.first?.id
+        let hasWaiting = loaded.contains { $0.state == "waiting" }
         for session in loaded where toolStates.contains(session.state) {
             let start: Double
             if session.ts > 0 {
@@ -2251,10 +2253,16 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             toolRunAlerted.insert(session.id)
             let minutes = max(Int((now - start) / 60), 1)
             let name = shortName(displayName(session), limit: 12)
+            let message = "「\(name)」工具已运行 \(minutes) 分钟"
+            // A waiting permission prompt outranks a background timeout; keep
+            // its bubble readable and only beep for the background session.
+            let bubbleBlocked = hasWaiting && session.id != displayedPrimary
             if sessionIsMuted(session) {
-                triggerAlert("「\(name)」工具已运行 \(minutes) 分钟", silent: true)
+                if !bubbleBlocked { triggerAlert(message, silent: true) }
+            } else if bubbleBlocked {
+                if soundEnabled && !doNotDisturb { playSound(soundTool) }
             } else {
-                triggerAlert("「\(name)」工具已运行 \(minutes) 分钟", sound: soundTool)
+                triggerAlert(message, sound: soundTool)
             }
         }
     }
@@ -3928,7 +3936,19 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         sessionsMenu.addItem(newSessionItem)
         let timeoutItem = NSMenuItem(title: "工具超时阈值", action: nil, keyEquivalent: "")
         let timeoutMenu = NSMenu()
-        for minutes in [0, 5, 10, 15, 30, 60] {
+        let timeoutPresets = [0, 5, 10, 15, 30, 60]
+        if !timeoutPresets.contains(where: { abs(toolTimeout - Double($0) * 60) < 0.5 }) {
+            let custom = NSMenuItem(
+                title: "自定义（\(String(format: "%g", toolTimeout / 60)) 分钟）",
+                action: nil,
+                keyEquivalent: ""
+            )
+            custom.state = .on
+            custom.isEnabled = false
+            timeoutMenu.addItem(custom)
+            timeoutMenu.addItem(.separator())
+        }
+        for minutes in timeoutPresets {
             let item = NSMenuItem(
                 title: minutes == 0 ? "关闭" : "\(minutes) 分钟",
                 action: #selector(menuToolTimeout(_:)),
