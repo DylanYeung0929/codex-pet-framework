@@ -15,6 +15,7 @@ private let statsURL = petRoot.appendingPathComponent("stats.json")
 private let runDir = petRoot.appendingPathComponent("run")
 private let configURL = petRoot.appendingPathComponent("config.json")
 private let reviewOffURL = petRoot.appendingPathComponent("review_off.txt")
+private let historyURL = petRoot.deletingLastPathComponent().appendingPathComponent("history.jsonl")
 private let showFlagURL = runDir.appendingPathComponent("pet.show")
 private let hideFlagURL = runDir.appendingPathComponent("pet.hide")
 private let hiddenFlagURL = runDir.appendingPathComponent("pet.hidden")
@@ -178,6 +179,13 @@ private struct PetStatus: Decodable {
     var message: String?
     var prompt: String?
     var last: String?
+}
+
+private struct RecentConversation {
+    let id: String
+    var project: String
+    var prompt: String
+    var ts: Double
 }
 
 private struct Session {
@@ -1063,6 +1071,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private var newlyEnteredStates = Set<String>()
     private var statsDirty = false
     private var menuSessionIDs: [String] = []
+    private var recentConversationIDs: [String] = []
+    private var recentConversationProjects: [String] = []
     private var sessionModelsCache: [String] = []
     private var sessionModelsCacheAt: Double = 0
     private var sessionModelsRefreshing = false
@@ -2033,6 +2043,68 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             if pa != pb { return pa > pb }
             return a.ts > b.ts
         }
+    }
+
+    private func loadRecentConversations(limit: Int) -> [RecentConversation] {
+        let text = readTail(historyURL, bytes: 524_288)
+        guard !text.isEmpty else { return [] }
+        var byID: [String: RecentConversation] = [:]
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let id = object["sessionId"] as? String,
+                  id.range(of: "^[A-Za-z0-9-]+$", options: .regularExpression) != nil,
+                  let project = object["project"] as? String, !project.isEmpty,
+                  let stamp = object["timestamp"] as? NSNumber else { continue }
+            let ts = stamp.doubleValue / 1000
+            let display = (object["display"] as? String ?? "")
+                .split(whereSeparator: { $0.isWhitespace })
+                .joined(separator: " ")
+            if var existing = byID[id] {
+                if ts >= existing.ts { existing.project = project }
+                existing.ts = max(existing.ts, ts)
+                if !display.isEmpty, !display.hasPrefix("/") { existing.prompt = display }
+                byID[id] = existing
+            } else {
+                byID[id] = RecentConversation(
+                    id: id,
+                    project: project,
+                    prompt: display.hasPrefix("/") ? "" : display,
+                    ts: ts
+                )
+            }
+        }
+        let active = Set(sessions.compactMap { $0.resumeID })
+        return byID.values
+            .filter { !active.contains($0.id) }
+            .filter { FileManager.default.fileExists(atPath: $0.project) }
+            .sorted { $0.ts > $1.ts }
+            .prefix(max(limit, 1))
+            .map { $0 }
+    }
+
+    private func recentConversationTitle(_ conversation: RecentConversation) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let project = conversation.project == home
+            ? "~"
+            : (conversation.project as NSString).lastPathComponent
+        let name = project.isEmpty ? "会话" : shortName(project, limit: 16)
+        let prompt = conversation.prompt.isEmpty
+            ? "会话 " + String(conversation.id.prefix(8))
+            : shortName(conversation.prompt, limit: 28)
+        return "\(relativeTime(conversation.ts)) · \(name) · \(prompt)"
+    }
+
+    private func relativeTime(_ ts: Double) -> String {
+        let delta = max(Date().timeIntervalSince1970 - ts, 0)
+        if delta < 60 { return "刚刚" }
+        if delta < 3_600 { return "\(Int(delta / 60)) 分钟前" }
+        if delta < 86_400 { return "\(Int(delta / 3_600)) 小时前" }
+        if delta < 604_800 { return "\(Int(delta / 86_400)) 天前" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MM-dd"
+        return formatter.string(from: Date(timeIntervalSince1970: ts))
     }
 
     private func refreshUsages() {
@@ -3936,6 +4008,31 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         )
         newSessionItem.target = self
         sessionsMenu.addItem(newSessionItem)
+        let recentItem = NSMenuItem(title: "最近对话", action: nil, keyEquivalent: "")
+        let recentMenu = NSMenu()
+        let recent = loadRecentConversations(limit: 8)
+        recentConversationIDs = recent.map { $0.id }
+        recentConversationProjects = recent.map { $0.project }
+        if recent.isEmpty {
+            let emptyItem = NSMenuItem(title: "暂无最近对话", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            recentMenu.addItem(emptyItem)
+        } else {
+            for (i, conversation) in recent.enumerated() {
+                let item = NSMenuItem(
+                    title: recentConversationTitle(conversation),
+                    action: #selector(menuOpenRecentConversation(_:)),
+                    keyEquivalent: ""
+                )
+                item.tag = i
+                item.target = self
+                item.toolTip = conversation.prompt + "\n" + conversation.project
+                    + "\n" + conversation.id
+                recentMenu.addItem(item)
+            }
+        }
+        recentItem.submenu = recentMenu
+        sessionsMenu.addItem(recentItem)
         let timeoutItem = NSMenuItem(title: "工具超时阈值", action: nil, keyEquivalent: "")
         let timeoutMenu = NSMenu()
         let timeoutPresets = [0, 5, 10, 15, 30, 60]
@@ -5120,13 +5217,27 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    @objc private func menuNewSession() {
-        // Resolve before the panel activates the pet, otherwise the frontmost
-        // app is CodexPet and the target terminal falls back to a running one.
-        let term = frontmostTerminalHint()
+    private func preferredTerminal() -> String {
+        frontmostTerminalHint()
             ?? sessions.max(by: { $0.ts < $1.ts })?.term
             ?? runningTerminalHint()
             ?? "Apple_Terminal"
+    }
+
+    @objc private func menuOpenRecentConversation(_ sender: NSMenuItem) {
+        guard recentConversationIDs.indices.contains(sender.tag),
+              recentConversationProjects.indices.contains(sender.tag) else { return }
+        let id = recentConversationIDs[sender.tag]
+        guard id.range(of: "^[A-Za-z0-9-]+$", options: .regularExpression) != nil else { return }
+        let command = "cd " + shellQuote(recentConversationProjects[sender.tag])
+            + " && claude --resume " + shellQuote(id)
+        openTerminalTab(term: preferredTerminal(), command: command)
+    }
+
+    @objc private func menuNewSession() {
+        // Resolve before the panel activates the pet, otherwise the frontmost
+        // app is CodexPet and the target terminal falls back to a running one.
+        let term = preferredTerminal()
         let picker = NSOpenPanel()
         picker.canChooseFiles = false
         picker.canChooseDirectories = true
