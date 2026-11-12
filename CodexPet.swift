@@ -16,6 +16,8 @@ private let runDir = petRoot.appendingPathComponent("run")
 private let configURL = petRoot.appendingPathComponent("config.json")
 private let reviewOffURL = petRoot.appendingPathComponent("review_off.txt")
 private let historyURL = petRoot.deletingLastPathComponent().appendingPathComponent("history.jsonl")
+private let claudeSettingsURL = petRoot.deletingLastPathComponent()
+    .appendingPathComponent("settings.json")
 private let showFlagURL = runDir.appendingPathComponent("pet.show")
 private let hideFlagURL = runDir.appendingPathComponent("pet.hide")
 private let hiddenFlagURL = runDir.appendingPathComponent("pet.hidden")
@@ -4489,6 +4491,23 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         currentItem.state = currentOnly ? .on : .off
         appearanceMenu.addItem(currentItem)
 
+        appearanceMenu.addItem(.separator())
+        let fullscreenItem = NSMenuItem(
+            title: "全屏渲染",
+            action: #selector(menuToggleFullscreen),
+            keyEquivalent: ""
+        )
+        fullscreenItem.target = self
+        fullscreenItem.state = tuiFullscreenActive() ? .on : .off
+        fullscreenItem.toolTip = "切换 Claude Code 的 /tui fullscreen（Alt Screen 渲染，写入 settings.json 的 tui）。"
+            + "新会话生效；当前会话可输入 /tui fullscreen 立即切换（会重启并恢复会话）。"
+        if let forced = tuiEnvironmentMode() {
+            fullscreenItem.isEnabled = false
+            fullscreenItem.toolTip = "当前由 settings.json 的 env 强制为"
+                + (forced == "fullscreen" ? "全屏渲染" : "经典渲染") + "，请先移除对应环境变量。"
+        }
+        appearanceMenu.addItem(fullscreenItem)
+
         let lockItem = NSMenuItem(
             title: "锁定位置",
             action: #selector(menuLock),
@@ -4822,6 +4841,20 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         saveState()
     }
 
+    @objc private func menuToggleFullscreen() {
+        guard tuiEnvironmentMode() == nil else { return }
+        let enabled = !tuiFullscreenActive()
+        guard setTuiFullscreen(enabled) else {
+            showNotice("无法修改全屏渲染", "写入 ~/.claude/settings.json 失败，请检查文件权限。")
+            return
+        }
+        triggerAlert(
+            enabled ? "已开启全屏渲染（新会话生效）" : "已关闭全屏渲染（新会话生效）",
+            silent: true,
+            duration: 3.5
+        )
+    }
+
     @objc private func menuOpenDataDir() {
         NSWorkspace.shared.open(petRoot)
     }
@@ -5000,6 +5033,62 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
         guard let value, effortLevels.contains(where: { $0.id == value }) else { return nil }
         return value
+    }
+
+    private func tuiEnvironmentMode() -> String? {
+        guard let data = try? Data(contentsOf: claudeSettingsURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let env = root["env"] as? [String: Any] else { return nil }
+        if let value = env["CLAUDE_CODE_NO_FLICKER"] as? String, value == "1" {
+            return "fullscreen"
+        }
+        if let value = env["CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"] as? String, value == "1" {
+            return "default"
+        }
+        return nil
+    }
+
+    private func tuiFullscreenActive() -> Bool {
+        if let forced = tuiEnvironmentMode() { return forced == "fullscreen" }
+        guard let data = try? Data(contentsOf: claudeSettingsURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return (root["tui"] as? String) == "fullscreen"
+    }
+
+    @discardableResult
+    private func setTuiFullscreen(_ enabled: Bool) -> Bool {
+        guard tuiEnvironmentMode() == nil,
+              let data = try? Data(contentsOf: claudeSettingsURL),
+              var text = String(data: data, encoding: .utf8) else { return false }
+        let mode = enabled ? "fullscreen" : "default"
+        let pattern = "\"tui\"[ \\t]*:[ \\t]*\"[^\"]*\""
+        if let range = text.range(of: pattern, options: .regularExpression) {
+            text.replaceSubrange(range, with: "\"tui\": \"\(mode)\"")
+        } else {
+            guard let close = text.range(of: "}", options: .backwards) else { return false }
+            var insertAt = close.lowerBound
+            var hasMember = false
+            while insertAt > text.startIndex {
+                let previous = text.index(before: insertAt)
+                let character = text[previous]
+                if !character.isWhitespace {
+                    hasMember = character != "{"
+                    insertAt = text.index(after: previous)
+                    break
+                }
+                insertAt = previous
+            }
+            let insertion = (hasMember ? ",\n  " : "\n  ") + "\"tui\": \"\(mode)\""
+            text.insert(contentsOf: insertion, at: insertAt)
+        }
+        do {
+            try text.write(to: claudeSettingsURL, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func wrapperShellPID(_ petID: String) -> Int32? {
