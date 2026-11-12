@@ -4,16 +4,27 @@ claude() {
   local pet_id=""
   local show_pet=1
   [[ -t 1 ]] || show_pet=0
-  local arg prev="" rid="" has_skip=0
+  local arg prev="" rid="" has_skip=0 has_continue=0
   for arg in "$@"; do
     case "$arg" in
       -p|--print|--version|-v|--help|-h) show_pet=0 ;;
       --dangerously-skip-permissions) has_skip=1 ;;
       --resume=*) rid="${arg#--resume=}" ;;
+      --continue|-c) has_continue=1 ;;
     esac
     if [[ "$prev" == "--resume" || "$prev" == "-r" ]]; then rid="$arg"; fi
     prev="$arg"
   done
+  # --continue resumes the newest session for this directory, whose UUID we can
+  # resolve exactly; a bare --resume opens a picker we cannot pre-annotate.
+  if (( has_skip == 0 )) && [[ -z "$rid" ]] && (( has_continue )); then
+    local project_dir="${PWD//[^A-Za-z0-9]/-}"
+    local -a transcripts
+    transcripts=( "$HOME/.claude/projects/$project_dir"/*.jsonl(Nom[1]) )
+    if (( ${#transcripts} > 0 )); then
+      rid="${${transcripts[1]:t}:r}"
+    fi
+  fi
   if (( has_skip == 0 )) && [[ -n "$rid" && -f "$pet_root/review_off.txt" ]] \
      && grep -qxF -- "$rid" "$pet_root/review_off.txt"; then
     set -- "$@" --dangerously-skip-permissions

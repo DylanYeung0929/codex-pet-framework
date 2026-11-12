@@ -4223,20 +4223,32 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     officialModels.forEach(addResumeModel)
                 }
                 sub.addItem(.separator())
+                let reviewOff = session.resumeID.map { reviewOffIDs.contains($0) } ?? false
+                let reviewPending = reviewOff && runtimeBypassActive(session) == false
                 let reviewItem = NSMenuItem(
-                    title: "个人审查",
+                    title: reviewPending ? "个人审查（当前进程未生效）" : "个人审查",
                     action: #selector(menuToggleSessionReview(_:)),
                     keyEquivalent: ""
                 )
                 reviewItem.tag = i
                 reviewItem.target = self
                 reviewItem.isEnabled = session.resumeID != nil
-                if let rid = session.resumeID, reviewOffIDs.contains(rid) {
-                    reviewItem.state = .off
-                } else {
-                    reviewItem.state = .on
-                }
+                reviewItem.state = reviewOff ? .off : .on
+                reviewItem.toolTip = reviewPending
+                    ? "该会话已标记为关闭审查，但当前进程未带 bypass；可用下方「重启并应用无审查」生效。"
+                    : nil
                 sub.addItem(reviewItem)
+                if reviewPending {
+                    let applyItem = NSMenuItem(
+                        title: "重启并应用无审查",
+                        action: #selector(menuRestartWithoutReview(_:)),
+                        keyEquivalent: ""
+                    )
+                    applyItem.tag = i
+                    applyItem.target = self
+                    applyItem.isEnabled = canAutoRestart(session.id)
+                    sub.addItem(applyItem)
+                }
                 item.submenu = sub
                 sessionsMenu.addItem(item)
             }
@@ -4874,6 +4886,19 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func menuRestartWithoutReview(_ sender: NSMenuItem) {
+        guard menuSessionIDs.indices.contains(sender.tag),
+              let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] })
+        else { return }
+        restartSession(
+            session,
+            effort: explicitEffort(for: session),
+            model: modelBySession[session.id],
+            skip: true,
+            reason: "该会话已标记为关闭个人审查，但当前进程未带 bypass。重启后该会话将不再逐次确认。"
+        )
+    }
+
     @objc private func menuShowEffort(_ sender: NSMenuItem) {
         guard menuSessionIDs.indices.contains(sender.tag),
               let session = sessions.first(where: { $0.id == menuSessionIDs[sender.tag] })
@@ -5020,6 +5045,20 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         FileManager.default.fileExists(
             atPath: runDir.appendingPathComponent(petID + ".restartable").path
         )
+    }
+
+    // review_off.txt records intent; a manual resume can still start claude
+    // without the flag, so check the live argv before claiming it is applied.
+    private func runtimeBypassActive(_ session: Session) -> Bool? {
+        guard let proc = claudeProcess(forPetID: session.id) else { return nil }
+        let tokens = proc.args.split(separator: " ").map(String.init)
+        if tokens.contains("--dangerously-skip-permissions") { return true }
+        if let i = tokens.firstIndex(of: "--permission-mode"),
+           i + 1 < tokens.count,
+           tokens[i + 1] == "bypassPermissions" {
+            return true
+        }
+        return false
     }
 
     @discardableResult

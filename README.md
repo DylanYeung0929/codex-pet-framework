@@ -90,7 +90,7 @@ cd ~/.claude/pet
 - **静音提醒**：只关闭该会话的完成 / 失败 / 等待 / 工具超时提示音，右上角红点照常显示；按 resume UUID 持久化，再次点击恢复。
 - **思考力度**：显示该会话当前力度，点击「调整思考力度…」打开滑块（低 / 中 / 高 / 超高 / 最高）。松开后立即向该会话的终端标签发送原生 `/effort <level>`，与手动输入等效，无需重启；会话正在等待权限确认或计划审批时不会注入。
 - **恢复会话**：运行 `claude --resume <UUID>`，可选择最近使用过的模型；「官方模型」小节列出当前 API 供应商 `/v1/models` 返回、但最近未用过的模型（10 分钟后台缓存，失败静默忽略）。新窗口优先开在当前前台终端，否则用最近会话对应的终端。执行前会提示先在旧终端退出，避免两个进程同时写入同一份会话记录。
-- **个人审查**：逐会话控制工具权限确认，只影响你修改的那一个会话。关闭后把该会话 UUID 写入 `review_off.txt`；确认重启后，宠物会结束该会话的 Claude 进程，并由包装函数在同一终端自动 `claude --resume <UUID>`（保留模型与力度）。包装函数只在 `--resume <该 UUID>` 时追加 `--dangerously-skip-permissions`，其他会话不受影响。该开关不改变计划审批与你主动发起的提问。若该会话由旧版包装函数启动，宠物会提示无法自动重启且不会结束进程；请换到新开的终端会话。
+- **个人审查**：逐会话控制工具权限确认，只影响你修改的那一个会话。关闭后把该会话 UUID 写入 `review_off.txt`；确认重启后，宠物会结束该会话的 Claude 进程，并由包装函数在同一终端自动 `claude --resume <UUID>`（保留模型与力度）。包装函数在 `--resume <该 UUID>` 或 `claude -c/--continue`（按当前目录最新 transcript 解析 UUID）命中记录时追加 `--dangerously-skip-permissions`，其他会话不受影响。不带 UUID 的 `--resume` 选择器无法预判，此时宠物会在「个人审查」标注「当前进程未生效」，并提供「重启并应用无审查」入口；从宠物菜单恢复会话也会自动补上参数。该开关不改变计划审批与你主动发起的提问。若该会话由旧版包装函数启动，宠物会提示无法自动重启且不会结束进程；请换到新开的终端会话。
 
 ### 生图模型
 
@@ -169,7 +169,7 @@ source ~/.claude/pet/pet_wrapper.zsh
 
 安装器写入的是带 `# >>> CodexPet >>>` / `# <<< CodexPet <<<` 标记的块，卸载时可精确移除。若 `~/.zshrc` 里已有其他来源的 `claude()` 函数，安装器只提示不覆盖，需手动合并。
 
-包装函数还支持宠物写入的一次性 `run/<id>.restart` 标记：Claude 退出后在原终端按标记自动执行 `claude --resume <UUID>`，可带 `--model`、`--effort` 与 `--dangerously-skip-permissions`；只影响该会话。新版包装函数会写 `run/<id>.restartable` 就绪标记，缺少该标记的旧会话不会被自动重启。
+包装函数还支持宠物写入的一次性 `run/<id>.restart` 标记：Claude 退出后在原终端按标记自动执行 `claude --resume <UUID>`，可带 `--model`、`--effort` 与 `--dangerously-skip-permissions`；只影响该会话。新版包装函数会写 `run/<id>.restartable` 就绪标记，缺少该标记的旧会话不会被自动重启。`claude -c/--continue` 会按当前目录最新的 transcript 解析出会话 UUID，命中 `review_off.txt` 时同样自动补上 `--dangerously-skip-permissions`。
 
 已打开的旧终端不会自动加载新函数，需新开终端或 `source ~/.zshrc`。
 
