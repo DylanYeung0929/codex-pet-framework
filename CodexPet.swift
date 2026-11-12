@@ -162,6 +162,73 @@ private let stateMotionGroups: [(key: String, title: String, rep: String)] = [
     ("idle", "空闲", "idle"),
 ]
 
+private let stateMotionTips: [String: String] = [
+    "thinking": "Claude 思考时播放的动画",
+    "search": "读取与搜索类工具运行时播放的动画",
+    "bash,tool": "Bash 及其他工具运行时播放的动画",
+    "waiting": "等待你确认权限或输入时播放的动画",
+    "done": "回合完成时播放的动画",
+    "failed": "工具失败或会话报错时播放的动画",
+    "idle": "无活跃任务时播放的动画",
+]
+
+private let soundGroupTips: [String: String] = [
+    "完成": "会话完成时的提示音；选中即试听",
+    "失败": "会话失败时的提示音；选中即试听",
+    "等待回复": "Claude 等待你输入或确认时的提示音；选中即试听",
+    "余额不足": "API 或火山余额低于阈值时的提示音；选中即试听",
+    "工具超时": "单条工具运行超过阈值时的提示音；选中即试听",
+]
+
+// Tooltips are filled in by title so static menu items do not repeat strings;
+// items with dynamic or duplicate titles set their own text at creation.
+private let menuTips: [String: String] = [
+    "回到待机": "立即停止当前动作，回到待机动画",
+    "动画": "手动播放动作，或为每种状态指定默认动画",
+    "状态动画": "为思考 / 搜索 / 工具 / 等待 / 完成 / 失败 / 空闲分别指定动画",
+    "恢复默认": "把状态动画映射恢复为默认",
+    "会话": "新建或恢复会话，以及上下文、思考力度、静音、审查等操作",
+    "新建会话…": "选择工作目录后，在终端新标签页运行 cd <目录> && claude；iTerm2 会新开窗口",
+    "最近对话": "列出最近 8 个历史会话（排除运行中与会话目录不存在的记录），点击即可在新终端恢复",
+    "暂无最近对话": "还没有可恢复的历史会话",
+    "工具超时阈值": "单条工具连续运行超过该时长时提醒一次；「关闭」表示不提醒；未在此设置时使用 config.json 的默认值",
+    "调整思考力度…": "打开力度滑块；松开后立即向该会话发送 /effort，无需重启",
+    "聚焦终端": "按 tty 选中对应的 Terminal / iTerm2 标签页",
+    "在 Finder 中打开目录": "在 Finder 中打开该会话的工作目录",
+    "复制会话 UUID": "把该会话的 resume UUID 复制到剪贴板",
+    "复制恢复命令": "选择模型后，把 cd <目录> && claude --resume <UUID> 复制到剪贴板",
+    "置顶会话": "让该会话优先展示；它空闲或已完成时不抢占优先级",
+    "个人审查": "关闭后不再逐次确认工具权限；写入 review_off.txt，重启该会话后由包装函数补 --dangerously-skip-permissions。不影响计划审批与你的主动提问",
+    "重启并应用无审查": "该会话已标记关闭审查但当前进程未带 bypass；点击重启并在同一终端恢复",
+    "生图模型": "读取 ~/.config/ark/env 并切换火山方舟图像模型",
+    "刷新模型与价格": "重新请求方舟模型列表与价格并更新本地缓存",
+    "查看官方定价 ↗": "在浏览器中打开火山方舟官方定价页",
+    "外观": "大小、字号、动画速度、空闲透明度与显示项",
+    "大小": "宠物显示比例（20%–100%），立即生效并持久化",
+    "字号": "气泡、悬停徽章与统计卡的字号；内边距与圆角随之等比缩放",
+    "动画速度": "动画播放速度（0.5×–2×）",
+    "空闲透明度": "无活跃任务且未悬停时的淡出程度；100% 为完全不透明",
+    "显示气泡": "显示宠物上方的状态气泡",
+    "显示悬停徽章": "悬停宠物时显示模型、上下文、余额与今日 tokens 等玻璃卡",
+    "只显示当前会话": "只显示前台终端标签页对应的会话；没有匹配时回退为显示全部",
+    "声音": "五组提示音、音量与勿扰模式",
+    "启用提示音": "所有提示音的总开关",
+    "音量": "提示音音量 10%–200%；超过 100% 用采样增益突破系统上限",
+    "勿扰模式（静音提醒）": "只静音声音提醒；气泡与红点等视觉提示照常",
+    "统计": "今日统计与近 7 天走势",
+    "今日统计": "弹窗显示今日会话数、完成、失败、活跃时长与 tokens",
+    "近 7 天统计": "逐日查看近 7 天的完成 / 失败 / tokens",
+    "窗口": "位置、置顶与窗口级操作",
+    "锁定位置": "禁止拖动宠物；左键点击聚焦终端仍然可用",
+    "始终置顶": "浮窗始终显示在其他窗口上方",
+    "⌥⌘P 显示/隐藏宠物": "全局快捷键开关；注册失败时会自动关闭并在此标注",
+    "⌥⌘P 显示/隐藏宠物（注册失败）": "该快捷键注册失败（可能被其他应用占用），释放后可重新打开",
+    "重置位置": "回到主屏右下角的默认位置",
+    "重新载入素材": "热重载 assets 中的动画素材，无需重启宠物",
+    "打开数据目录": "在 Finder 中打开 ~/.claude/pet",
+    "退出": "退出宠物浮窗；不会退出正在运行的 claude 会话",
+]
+
 private struct PetConfig: Decodable {
     var contextWindow: Int?
     var balanceAlert: Double?
@@ -3961,6 +4028,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             )
             item.tag = i
             item.target = self
+            item.toolTip = "手动播放动作「\(motion.name)」"
             if i == index { item.state = .on }
             animationMenu.addItem(item)
         }
@@ -3970,6 +4038,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         let stateMenu = NSMenu()
         for group in stateMotionGroups {
             let entry = NSMenuItem(title: group.title, action: nil, keyEquivalent: "")
+            entry.toolTip = stateMotionTips[group.key]
             let choices = NSMenu()
             let currentKey = motionKey(for: group.rep)
             for (i, motion) in motions.enumerated() {
@@ -3981,6 +4050,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 item.tag = i
                 item.representedObject = group.key
                 item.target = self
+                item.toolTip = "为该状态选择动画「\(motion.name)」"
                 if motion.key == currentKey { item.state = .on }
                 choices.addItem(item)
             }
@@ -4077,6 +4147,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     keyEquivalent: ""
                 )
                 item.tag = i
+                item.toolTip = "展开该会话的上下文、思考力度、静音、恢复与审查操作"
                 if session.id == primaryID { item.state = .on }
                 let sub = NSMenu()
                 let contextItem = NSMenuItem(
@@ -4085,6 +4156,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     keyEquivalent: ""
                 )
                 contextItem.isEnabled = false
+                contextItem.toolTip = "当前上下文占用（已用 / 窗口上限）；接近上限时 Claude Code 会自动压缩"
                 sub.addItem(contextItem)
                 let modelItem = NSMenuItem(
                     title: "模型 " + (modelBySession[session.id] ?? "--"),
@@ -4092,6 +4164,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     keyEquivalent: ""
                 )
                 modelItem.isEnabled = false
+                modelItem.toolTip = "该会话当前使用的模型"
                 sub.addItem(modelItem)
                 let effortRow = NSMenuItem(
                     title: "思考力度 " + effortLabel(effortLevel(for: session, entries: psSnapshot)),
@@ -4099,6 +4172,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     keyEquivalent: ""
                 )
                 effortRow.isEnabled = false
+                effortRow.toolTip = "该会话当前思考力度；可在下方「调整思考力度…」修改"
                 sub.addItem(effortRow)
                 let effortAction = NSMenuItem(
                     title: "调整思考力度…",
@@ -4112,6 +4186,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 if let turnText = sessionTurnLabel(session) {
                     let turnItem = NSMenuItem(title: turnText, action: nil, keyEquivalent: "")
                     turnItem.isEnabled = false
+                    turnItem.toolTip = "本轮从提交到现在的用时；完成后显示上一轮用时"
                     sub.addItem(turnItem)
                 }
                 sub.addItem(.separator())
@@ -4158,6 +4233,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     item.tag = i
                     item.representedObject = model
                     item.target = self
+                    item.toolTip = model.map { "复制使用 \($0) 的恢复命令（--resume）" }
+                        ?? "使用默认模型复制恢复命令"
                     copyMenu.addItem(item)
                 }
                 addCopyModel(nil)
@@ -4167,6 +4244,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     copyMenu.addItem(.separator())
                     let header = NSMenuItem(title: "官方模型", action: nil, keyEquivalent: "")
                     header.isEnabled = false
+                    header.toolTip = "当前供应商 /v1/models 返回、最近未使用的模型"
                     copyMenu.addItem(header)
                     copyOfficial.forEach { addCopyModel($0) }
                 }
@@ -4202,6 +4280,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 resume.tag = i
                 resume.target = self
                 resume.isEnabled = !session.cwd.isEmpty && session.resumeID != nil
+                resume.toolTip = "用默认模型在新终端恢复该会话（新标签页，iTerm2 新窗口）"
                 sub.addItem(resume)
                 func addResumeModel(_ model: String) {
                     let modelItem = NSMenuItem(
@@ -4213,6 +4292,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     modelItem.representedObject = model
                     modelItem.target = self
                     modelItem.isEnabled = !session.cwd.isEmpty && session.resumeID != nil
+                    modelItem.toolTip = "用该模型在新终端恢复该会话（新标签页，iTerm2 新窗口）"
                     sub.addItem(modelItem)
                 }
                 recentModels.forEach(addResumeModel)
@@ -4221,12 +4301,13 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                     sub.addItem(.separator())
                     let officialHeader = NSMenuItem(title: "官方模型", action: nil, keyEquivalent: "")
                     officialHeader.isEnabled = false
+                    officialHeader.toolTip = "当前供应商 /v1/models 返回、最近未使用的模型"
                     sub.addItem(officialHeader)
                     officialModels.forEach(addResumeModel)
                 }
                 sub.addItem(.separator())
                 let reviewOff = session.resumeID.map { reviewOffIDs.contains($0) } ?? false
-                let reviewPending = reviewOff && runtimeBypassActive(session) == false
+                let reviewPending = reviewOff && runtimeBypassActive(session, entries: psSnapshot) == false
                 let reviewItem = NSMenuItem(
                     title: reviewPending ? "个人审查（当前进程未生效）" : "个人审查",
                     action: #selector(menuToggleSessionReview(_:)),
@@ -4271,6 +4352,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
                 keyEquivalent: ""
             )
             status.isEnabled = false
+            status.toolTip = "正在从火山方舟获取图像模型列表与价格"
             arkMenu.addItem(status)
         }
         for model in arkImageModels {
@@ -4283,6 +4365,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             )
             item.representedObject = model.id
             item.target = self
+            item.toolTip = "点击写入 ARK_IMAGE_MODEL 到 ~/.config/ark/env；标题含官方价格与下线状态"
             if model.id == selectedModel { item.state = .on }
             arkMenu.addItem(item)
         }
@@ -4293,6 +4376,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         stampItem.isEnabled = false
+        stampItem.toolTip = "模型列表与价格的缓存时间；可用下方「刷新模型与价格」手动更新"
         arkMenu.addItem(stampItem)
         let refreshArk = NSMenuItem(
             title: "刷新模型与价格",
@@ -4439,6 +4523,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         ]
         for (title, action, selected) in soundChoices {
             let targetItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            targetItem.toolTip = soundGroupTips[title]
             let choices = NSMenu()
             for (i, sound) in alertSounds.enumerated() {
                 let item = NSMenuItem(
@@ -4581,7 +4666,18 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
 
+        applyMenuTips(menu)
         NSMenu.popUpContextMenu(menu, with: event, for: petView)
+    }
+
+    // Fill missing tooltips by title so every submenu gets the same hints.
+    private func applyMenuTips(_ menu: NSMenu) {
+        for item in menu.items {
+            if item.toolTip?.isEmpty ?? true, let tip = menuTips[item.title] {
+                item.toolTip = tip
+            }
+            if let submenu = item.submenu { applyMenuTips(submenu) }
+        }
     }
 
     private func sessionContextLabel(_ session: Session) -> String {
@@ -4845,7 +4941,10 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         guard tuiEnvironmentMode() == nil else { return }
         let enabled = !tuiFullscreenActive()
         guard setTuiFullscreen(enabled) else {
-            showNotice("无法修改全屏渲染", "写入 ~/.claude/settings.json 失败，请检查文件权限。")
+            showNotice(
+                "无法修改全屏渲染",
+                "请检查 ~/.claude/settings.json 是否可写，且 tui 为字符串（default / fullscreen）。"
+            )
             return
         }
         triggerAlert(
@@ -5061,12 +5160,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     private func setTuiFullscreen(_ enabled: Bool) -> Bool {
         guard tuiEnvironmentMode() == nil,
               let data = try? Data(contentsOf: claudeSettingsURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               var text = String(data: data, encoding: .utf8) else { return false }
         let mode = enabled ? "fullscreen" : "default"
-        let pattern = "\"tui\"[ \\t]*:[ \\t]*\"[^\"]*\""
-        if let range = text.range(of: pattern, options: .regularExpression) {
-            text.replaceSubrange(range, with: "\"tui\": \"\(mode)\"")
-        } else {
+        let existing = root["tui"]
+        // Duplicate or oddly typed values would make the edit disagree with
+        // whichever key JSON parsers pick; only edit well-formed string values.
+        if existing != nil, !(existing is String) { return false }
+        if existing == nil {
             guard let close = text.range(of: "}", options: .backwards) else { return false }
             var insertAt = close.lowerBound
             var hasMember = false
@@ -5082,9 +5183,36 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             }
             let insertion = (hasMember ? ",\n  " : "\n  ") + "\"tui\": \"\(mode)\""
             text.insert(contentsOf: insertion, at: insertAt)
+        } else {
+            let pattern = "\"tui\"[ \\t]*:[ \\t]*\"[^\"]*\""
+            let replacement = "\"tui\": \"\(mode)\""
+            var rebuilt = ""
+            var remainder = text[...]
+            var replaced = 0
+            while let range = remainder.range(of: pattern, options: .regularExpression) {
+                rebuilt += remainder[..<range.lowerBound]
+                rebuilt += replacement
+                remainder = remainder[range.upperBound...]
+                replaced += 1
+                if replaced > 16 { return false }
+            }
+            guard replaced > 0 else { return false }
+            text = rebuilt + remainder
         }
+        // Verify the edited text still parses and agrees with the requested
+        // mode before replacing the user's settings file.
+        guard let check = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+              (check["tui"] as? String) == mode else { return false }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: claudeSettingsURL.path)
+        let permissions = attributes?[.posixPermissions] as? NSNumber
         do {
             try text.write(to: claudeSettingsURL, atomically: true, encoding: .utf8)
+            if let permissions {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: permissions],
+                    ofItemAtPath: claudeSettingsURL.path
+                )
+            }
             return true
         } catch {
             return false
@@ -5138,8 +5266,8 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     // review_off.txt records intent; a manual resume can still start claude
     // without the flag, so check the live argv before claiming it is applied.
-    private func runtimeBypassActive(_ session: Session) -> Bool? {
-        guard let proc = claudeProcess(forPetID: session.id) else { return nil }
+    private func runtimeBypassActive(_ session: Session, entries: [ProcessEntry]? = nil) -> Bool? {
+        guard let proc = claudeProcess(forPetID: session.id, entries: entries) else { return nil }
         let tokens = proc.args.split(separator: " ").map(String.init)
         if tokens.contains("--dangerously-skip-permissions") { return true }
         if let i = tokens.firstIndex(of: "--permission-mode"),
