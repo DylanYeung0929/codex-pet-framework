@@ -48,7 +48,7 @@ cd ~/.claude/pet
 - **空闲半透明**：无活跃任务且未悬停时按「空闲透明度」淡出（默认 60%，右键菜单可选 25%–100%），待机动画半速播放、刷新降至 15fps。
 - **提示音**：完成 / 失败 / 等待回复 / 余额不足 / 工具超时五组可分别选音，选中即试听；音量 10%–200%，超过 100% 用采样增益突破系统上限。勿扰模式只静音提醒，视觉提示照常。
 - **字号**：右键「字号」可选小 / 标准 / 大 / 特大，作用于气泡、悬停徽章与统计卡；内边距、圆角与行距随字号等比缩放，选择持久化。
-- **全屏渲染**：右键「外观 → 全屏渲染」切换 Claude Code 的 `/tui fullscreen`（Alt Screen 渲染），写入 `~/.claude/settings.json` 的 `tui` 键（`fullscreen` / `default`），只改这一行、保留其余内容与格式。新会话生效；当前会话可输入 `/tui fullscreen` 立即切换（会重启并恢复会话）。`settings.json` 的 env 强制项 `CLAUDE_CODE_NO_FLICKER` / `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` 存在时菜单项禁用并提示。
+- **全屏渲染**：右键「外观 → 全屏渲染」切换 Claude Code 的 `/tui fullscreen`（Alt Screen 渲染），写入 `~/.claude/settings.json` 的 `tui` 键（`fullscreen` / `default`），只改这一行、保留其余内容与格式。新会话生效；当前会话可输入 `/tui fullscreen` 立即切换（会重启并恢复会话）。`settings.json` 的 env 或当前 shell 环境设置了 `CLAUDE_CODE_NO_FLICKER` / `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`（1 / true / yes / on）时菜单项禁用并提示。
 - **运行计时**：思考 / 运行工具 / 等待时，气泡在状态标题前实时显示计时（mm:ss，位置固定不随标题跳变）；多会话气泡逐行显示各自用时，悬停徽章表格新增用时列（完成后显示上轮用时）。完成气泡保留本轮从提交到 Stop 的总耗时。
 - **思考力度**：会话子菜单打开滑块，松开后立即向该会话发送原生 `/effort`，即时生效、无需重启。
 - **历史统计**：按天归档完成数、失败数、活跃时长与 tokens，保留 30 天；今日统计卡附 7 天走势，右键「近 7 天统计」可查看逐日完成 / 失败 / tokens 列表卡。
@@ -78,7 +78,7 @@ cd ~/.claude/pet
 
 右键「会话」顶部为「新建会话…」：选择工作目录后，在前台终端的新标签页运行 `cd <目录> && claude`（iTerm2 走新窗口）；包装函数照常接管，无需手动开终端。
 
-其下为「最近对话」：读取 `~/.claude/history.jsonl` 尾部，按 sessionId 去重后取最近 8 个（排除正在运行与目录已不存在的会话），标题显示相对时间、项目名与首条提示词。点击后在新终端标签页运行 `cd <目录> && claude --resume <UUID>`；若该会话仍被标记为关闭个人审查，包装函数会自动追加 `--dangerously-skip-permissions`。
+其下为「最近对话」：读取 `~/.claude/history.jsonl` 尾部，按 sessionId 去重后取最近 8 个（排除正在运行、目录已不存在或 transcript 已被清理的会话），标题显示相对时间、项目名与首条提示词。点击后在新终端标签页运行 `cd <目录> && claude --resume <UUID>`；若该会话仍被标记为关闭个人审查，包装函数会自动追加 `--dangerously-skip-permissions`。
 
 其下列出所有活跃会话，子菜单内：
 

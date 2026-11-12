@@ -18,9 +18,26 @@ claude() {
   # --continue resumes the newest session for this directory, whose UUID we can
   # resolve exactly; a bare --resume opens a picker we cannot pre-annotate.
   if (( has_skip == 0 )) && [[ -z "$rid" ]] && (( has_continue )); then
-    local project_dir="${PWD//[^A-Za-z0-9]/-}"
+    # Claude groups transcripts by the physical cwd, replacing every UTF-16
+    # code unit outside [A-Za-z0-9] with "-"; mirror that to locate the file.
+    local physical
+    physical="$(pwd -P)"
+    local project_dir
+    project_dir="$(/usr/bin/python3 -I -c '
+import sys
+p = sys.argv[1]
+b = p.encode("utf-16-le", "surrogatepass")
+out = []
+for i in range(0, len(b), 2):
+    c = b[i:i+2].decode("utf-16-le", "surrogatepass")
+    ok = len(c) == 1 and (("0" <= c <= "9") or ("a" <= c <= "z") or ("A" <= c <= "Z"))
+    out.append(c if ok else "-")
+sys.stdout.write("".join(out))
+' "$physical" 2>/dev/null)"
     local -a transcripts
-    transcripts=( "$HOME/.claude/projects/$project_dir"/*.jsonl(Nom[1]) )
+    if [[ -n "$project_dir" ]]; then
+      transcripts=( "$HOME/.claude/projects/$project_dir"/*.jsonl(Nom[1]) )
+    fi
     if (( ${#transcripts} > 0 )); then
       rid="${${transcripts[1]:t}:r}"
     fi

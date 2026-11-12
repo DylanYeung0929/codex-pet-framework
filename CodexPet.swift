@@ -2144,12 +2144,40 @@ private final class PetApp: NSObject, NSApplicationDelegate {
             }
         }
         let active = Set(sessions.compactMap { $0.resumeID })
+        let projectsRoot = petRoot.deletingLastPathComponent()
+            .appendingPathComponent("projects")
         return byID.values
             .filter { !active.contains($0.id) }
             .filter { FileManager.default.fileExists(atPath: $0.project) }
+            .filter {
+                // history.jsonl outlives cleaned-up transcripts; hide sessions
+                // that can no longer be resumed.
+                let transcript = projectsRoot
+                    .appendingPathComponent(projectSlug($0.project))
+                    .appendingPathComponent($0.id + ".jsonl")
+                return FileManager.default.fileExists(atPath: transcript.path)
+            }
             .sorted { $0.ts > $1.ts }
             .prefix(max(limit, 1))
             .map { $0 }
+    }
+
+    // Claude stores transcripts under a slug of the physical cwd, replacing
+    // every UTF-16 code unit outside [A-Za-z0-9] with "-".
+    private func projectSlug(_ path: String) -> String {
+        var slug = ""
+        for scalar in path.unicodeScalars {
+            if String(scalar).utf16.count == 2 {
+                slug += "--"
+            } else if (48...57).contains(scalar.value)
+                || (65...90).contains(scalar.value)
+                || (97...122).contains(scalar.value) {
+                slug.unicodeScalars.append(scalar)
+            } else {
+                slug.append("-")
+            }
+        }
+        return slug
     }
 
     private func recentConversationTitle(_ conversation: RecentConversation) -> String {
@@ -5135,15 +5163,23 @@ private final class PetApp: NSObject, NSApplicationDelegate {
     }
 
     private func tuiEnvironmentMode() -> String? {
-        guard let data = try? Data(contentsOf: claudeSettingsURL),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let env = root["env"] as? [String: Any] else { return nil }
-        if let value = env["CLAUDE_CODE_NO_FLICKER"] as? String, value == "1" {
-            return "fullscreen"
+        var settingsEnv: [String: Any] = [:]
+        if let data = try? Data(contentsOf: claudeSettingsURL),
+           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let env = root["env"] as? [String: Any] {
+            settingsEnv = env
         }
-        if let value = env["CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"] as? String, value == "1" {
-            return "default"
+        func flag(_ key: String) -> Bool {
+            let value = (settingsEnv[key] as? String)
+                ?? ProcessInfo.processInfo.environment[key]
+            guard let value else { return false }
+            switch value.trimmingCharacters(in: .whitespaces).lowercased() {
+            case "1", "true", "yes", "on": return true
+            default: return false
+            }
         }
+        if flag("CLAUDE_CODE_NO_FLICKER") { return "fullscreen" }
+        if flag("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN") { return "default" }
         return nil
     }
 
@@ -5158,11 +5194,26 @@ private final class PetApp: NSObject, NSApplicationDelegate {
 
     @discardableResult
     private func setTuiFullscreen(_ enabled: Bool) -> Bool {
-        guard tuiEnvironmentMode() == nil,
-              let data = try? Data(contentsOf: claudeSettingsURL),
+        guard tuiEnvironmentMode() == nil else { return false }
+        let mode = enabled ? "fullscreen" : "default"
+        // Rewrite the symlink target so dotfiles-managed settings stay linked.
+        let writeURL = claudeSettingsURL.resolvingSymlinksInPath()
+        if !FileManager.default.fileExists(atPath: writeURL.path) {
+            let text = "{\n  \"tui\": \"\(mode)\"\n}\n"
+            do {
+                try text.write(to: writeURL, atomically: true, encoding: .utf8)
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: NSNumber(value: 0o600)],
+                    ofItemAtPath: writeURL.path
+                )
+                return true
+            } catch {
+                return false
+            }
+        }
+        guard let data = try? Data(contentsOf: writeURL),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               var text = String(data: data, encoding: .utf8) else { return false }
-        let mode = enabled ? "fullscreen" : "default"
         let existing = root["tui"]
         // Duplicate or oddly typed values would make the edit disagree with
         // whichever key JSON parsers pick; only edit well-formed string values.
@@ -5203,14 +5254,14 @@ private final class PetApp: NSObject, NSApplicationDelegate {
         // mode before replacing the user's settings file.
         guard let check = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
               (check["tui"] as? String) == mode else { return false }
-        let attributes = try? FileManager.default.attributesOfItem(atPath: claudeSettingsURL.path)
+        let attributes = try? FileManager.default.attributesOfItem(atPath: writeURL.path)
         let permissions = attributes?[.posixPermissions] as? NSNumber
         do {
-            try text.write(to: claudeSettingsURL, atomically: true, encoding: .utf8)
+            try text.write(to: writeURL, atomically: true, encoding: .utf8)
             if let permissions {
                 try? FileManager.default.setAttributes(
                     [.posixPermissions: permissions],
-                    ofItemAtPath: claudeSettingsURL.path
+                    ofItemAtPath: writeURL.path
                 )
             }
             return true
@@ -5275,6 +5326,7 @@ private final class PetApp: NSObject, NSApplicationDelegate {
            tokens[i + 1] == "bypassPermissions" {
             return true
         }
+        if tokens.contains("--permission-mode=bypassPermissions") { return true }
         return false
     }
 
